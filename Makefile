@@ -5,7 +5,7 @@
 APP = main
 
 # all source are stored in SRCS-y
-SRCS-y := main.cc dpdk_transport.cc
+SRCS-y := main.c dpdk_transport.c
 
 # Build using pkg-config variables if possible
 $(shell pkg-config --exists libdpdk)
