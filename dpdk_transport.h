@@ -3,6 +3,8 @@
 
 #define MAX_MSG_SiZE 100000
 
+#include<inttypes.h>
+
 struct msginfo
 {
 	uint32_t src_ip;
@@ -14,8 +16,8 @@ struct msginfo
 };
 
 int init(int argc, char *argv[]);
-int sendmsg(const void *buffer, const struct msginfo *info);
-uint32_t recvmsg(void *buffer, struct msginfo *info);
+int senddpdk(const void *buffer, const struct msginfo *info);
+uint32_t recvdpdk(void *buffer, struct msginfo *info);
 uint64_t port_to_mac(uint16_t portid);
 uint32_t string_to_ip(char *s);
 uint64_t string_to_mac(char *s);

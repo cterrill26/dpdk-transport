@@ -5,7 +5,7 @@
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
-#define NUM_MBUFS ((64*1024)-1)
+#define NUM_MBUFS ((64 * 1024) - 1)
 #define SCHED_TX_RING_SZ 65536
 #define SCHED_RX_SEND_RING_SZ 65536
 #define SCHED_RX_RECV_RING_SZ 65536
@@ -26,19 +26,29 @@ struct rte_ring *recv_ring;
 struct rte_ring *send_ring;
 struct rte_mempool *mbuf_pool;
 
-struct msgbuf{
+struct msgbuf
+{
     struct msginfo *info;
     char *msg;
 };
 
+static const struct rte_eth_conf port_conf_default = {
+    .rxmode = {
+        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+    },
+};
 
-int init(int argc, char *argv[]){
+int init(int argc, char *argv[])
+{
     /* Initialize the Environment Abstraction Layer (EAL). */
     int ret = rte_eal_init(argc, argv);
     if (ret < 0)
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
 
     unsigned nb_ports = rte_eth_dev_count_avail();
+    if (nb_ports == 0)
+		rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
+
     printf("rte_eth_dev_count_avail()=%d\n", nb_ports);
 
     /* Creates a new mempool in memory to hold the mbufs. */
@@ -48,50 +58,60 @@ int init(int argc, char *argv[]){
     if (mbuf_pool == NULL)
         rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
+    /* initialize all ports */
+    uint16_t portid;
+	RTE_ETH_FOREACH_DEV(portid) {
+		printf("Initializing port %u... done\n", portid);
 
-
-	recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
-			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-	send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
-			rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-	// rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
-	// 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-	// rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
-	// 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-	// tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
-	// 		rte_socket_id(), RING_F_SC_DEQ);
+		if (port_init(portid) != 0)
+			rte_exit(EXIT_FAILURE, "Cannot initialize port %u\n",
+					portid);
+	}
+    recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
+                                rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
+                                rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    // rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
+    // 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    // rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
+    // 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    // tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
+    // 		rte_socket_id(), RING_F_SC_DEQ);
 
     return ret;
 }
 
-
-int sendmsg(void *buffer, const struct msginfo *info){
+int senddpdk(const void *buffer, const struct msginfo *info)
+{
     uint32_t length = info->length;
 
-    struct msgbuf *buf = rte_malloc("msgbuf", sizeof(msgbuf), 0);
-    buf->info = rte_malloc("msgbuf_info", sizeof(msginfo), 0);
+    struct msgbuf *buf = rte_malloc("msgbuf", sizeof(struct msgbuf), 0);
+    buf->info = rte_malloc("msgbuf_info", sizeof(struct msginfo), 0);
     buf->msg = rte_malloc("msgbuf_msg", length, 0);
 
-    rte_memcpy(buf->info, info, sizeof(msginfo));
+    rte_memcpy(buf->info, info, sizeof(struct msginfo));
     rte_memcpy(buf->msg, buffer, length);
 
-    if (rte_ring_enqueue(&send_ring, buf) != 0) {
+    if (rte_ring_enqueue(send_ring, buf) != 0)
+    {
         return -1;
     }
 
     return 0;
 }
 
-uint32_t recvmsg(void *buffer, struct msginfo *info){
+uint32_t recvdpdk(void *buffer, struct msginfo *info)
+{
     struct msgbuf *buf;
-    if (rte_ring_dequeue(&recv_ring, &buf) != 0) {
+    if (rte_ring_dequeue(recv_ring, (void*) &buf) != 0)
+    {
         info->length = 0;
         return 0;
     }
 
     uint32_t length = buf->info->length;
     rte_memcpy(buffer, buf->msg, length);
-    rte_memcpy(info, buf->info, sizeof(msginfo));
+    rte_memcpy(info, buf->info, sizeof(struct msginfo));
 
     rte_free(buf->info);
     rte_free(buf->msg);
@@ -103,7 +123,7 @@ uint32_t recvmsg(void *buffer, struct msginfo *info){
  * Initializes a given port using global settings and with the RX buffers
  * coming from the mbuf_pool passed as a parameter.
  */
-static int port_init(uint16_t port)
+static int port_init(uint16_t portid)
 {
     struct rte_eth_conf port_conf = port_conf_default;
     const uint16_t rx_rings = 1, tx_rings = 1;
@@ -182,21 +202,21 @@ static int port_init(uint16_t port)
 // get the uint64_t MAC address for a given portid
 uint64_t port_to_mac(uint16_t portid)
 {
-    if (!rte_eth_dev_is_valid_port(portid)){
+    if (!rte_eth_dev_is_valid_port(portid))
+    {
         fprintf(stderr, "invalid portid: %u\n", portid);
         exit(1);
     }
-    
+
     union
     {
         uint64_t as_int;
         struct rte_ether_addr as_addr;
     } mac_addr;
 
-    mac_addr addr;
-    rte_eth_macaddr_get(portid, &addr.as_addr);
+    rte_eth_macaddr_get(portid, &mac_addr.as_addr);
 
-    return addr.as_int;
+    return mac_addr.as_int;
 }
 
 // convert a quad-dot IP string to uint32_t IP address
