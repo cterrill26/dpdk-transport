@@ -3,6 +3,8 @@
 #include <rte_memcpy.h>
 #include <rte_malloc.h>
 #include <rte_debug.h>
+#include <rte_hash.h>
+#include <rte_common.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -15,16 +17,44 @@
 #define MBUF_CACHE_SIZE 128
 #define BURST_SIZE_RX 64
 #define BURST_SIZE_TX 32
+#define SEND_TABLE_ENTRIES 1024
+#define RECV_TABLE_ENTRIES 1024
 
 #define IP_DEFTTL 64 /* from RFC 1340. */
 #define IP_VERSION 0x40
 #define IP_HDRLEN 0x05 /* default IP header length == five 32-bits words. */
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
+#define IPPROTO_DPDK_TRANSPORT 200
+#define DPDK_TRANSPORT_MSGDATA 0
+#define DPDK_TRANSPORT_COMPLETE 1
+#define DPDK_TRANSPORT_RESEND 2
+
+struct dpdk_transport_hdr
+{
+    rte_be32_t msgid;
+    rte_be32_t msg_len;
+    rte_be8_t pktid;
+    rte_be8_t type;
+} __attribute__((__packed__));
+
 struct msgbuf
 {
     struct msginfo *info;
     char *msg;
+};
+
+struct msg_send_record
+{
+    struct msgbuf *buf;
+    char *template_hdr;
+};
+
+struct msg_recv_record
+{
+    uint32_t msgid;
+    uint32_t msg_len;
+    uint8_t *pktids_received;
 };
 
 static const struct rte_eth_conf port_conf_default = {
@@ -45,6 +75,9 @@ static inline void flush_all_ports(struct output_buffer *tx_buffers);
 static int lcore_tx(void *arg);
 static inline int is_control_pkt(const struct rte_mbuf *buf);
 static int lcore_rx(void *arg);
+static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
+static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid);
+static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32_t msg_id);
 static int lcore_send(void *arg);
 static int lcore_recv(void *arg);
 
@@ -56,7 +89,8 @@ struct rte_ring *rx_send_ring;
 struct rte_mempool *mbuf_pool;
 volatile int quit_signal_tx;
 volatile int quit_signal_rx;
-
+volatile int quit_signal_send;
+volatile int quit_signal_recv;
 
 int init(int argc, char *argv[])
 {
@@ -101,14 +135,14 @@ int init(int argc, char *argv[])
     tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
                               rte_socket_id(), RING_F_SC_DEQ);
 
-	if (rte_lcore_count() < 5)
-		rte_exit(EXIT_FAILURE, "Error, This application needs at "
-				"least 5 logical cores to run:\n"
-				"1 lcore for user application\n"
-				"1 lcore for packet RX\n"
-				"1 lcore for packet TX\n"
-				"1 lcore for send processing\n"
-				"1 lcore for recv processing\n");
+    if (rte_lcore_count() < 5)
+        rte_exit(EXIT_FAILURE, "Error, This application needs at "
+                               "least 5 logical cores to run:\n"
+                               "1 lcore for user application\n"
+                               "1 lcore for packet RX\n"
+                               "1 lcore for packet TX\n"
+                               "1 lcore for send processing\n"
+                               "1 lcore for recv processing\n");
 
     /* assign each thread to a core */
     unsigned int lcore_id;
@@ -117,24 +151,29 @@ int init(int argc, char *argv[])
     int send_core_id = -1;
     int recv_core_id = -1;
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
-		if (rx_core_id < 0) {
-			rx_core_id = lcore_id;
-			printf("RX on core %d\n", lcore_id);
-		}
-		else if (tx_core_id < 0) {
-			tx_core_id = lcore_id;
-			printf("TX on core %d\n", lcore_id);
-		}
-		else if (send_core_id < 0) {
-			send_core_id = lcore_id;
-			printf("Send on core %d\n", lcore_id);
-		}
-		else if (recv_core_id < 0) {
-			recv_core_id = lcore_id;
-			printf("Recv on core %d\n", lcore_id);
-		}
-        else 
+    RTE_LCORE_FOREACH_SLAVE(lcore_id)
+    {
+        if (rx_core_id < 0)
+        {
+            rx_core_id = lcore_id;
+            printf("RX on core %d\n", lcore_id);
+        }
+        else if (tx_core_id < 0)
+        {
+            tx_core_id = lcore_id;
+            printf("TX on core %d\n", lcore_id);
+        }
+        else if (send_core_id < 0)
+        {
+            send_core_id = lcore_id;
+            printf("Send on core %d\n", lcore_id);
+        }
+        else if (recv_core_id < 0)
+        {
+            recv_core_id = lcore_id;
+            printf("Recv on core %d\n", lcore_id);
+        }
+        else
             break;
     }
 
@@ -142,29 +181,30 @@ int init(int argc, char *argv[])
     quit_signal_tx = 0;
     quit_signal_rx = 0;
 
-	rte_eal_remote_launch((lcore_function_t *)lcore_rx, NULL, rx_core_id);
-	rte_eal_remote_launch((lcore_function_t *)lcore_tx, NULL, tx_core_id);
-	rte_eal_remote_launch((lcore_function_t *)lcore_send, NULL, send_core_id);
-	rte_eal_remote_launch((lcore_function_t *)lcore_recv, NULL, recv_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_rx, NULL, rx_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_tx, NULL, tx_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_send, NULL, send_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_recv, NULL, recv_core_id);
 
     return ret;
 }
 
-int terminate(void){
+int terminate(void)
+{
     quit_signal_rx = 1;
 
     unsigned int lcore_id;
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
-		if (rte_eal_wait_lcore(lcore_id) < 0)
-			return -1;
-	}
+    RTE_LCORE_FOREACH_SLAVE(lcore_id)
+    {
+        if (rte_eal_wait_lcore(lcore_id) < 0)
+            return -1;
+    }
 
-	/* clean up the EAL */
-	rte_eal_cleanup();
+    /* clean up the EAL */
+    rte_eal_cleanup();
 
     return 0;
 }
-
 
 int send_dpdk(const void *buffer, const struct msginfo *info)
 {
@@ -367,8 +407,16 @@ static int lcore_tx(__attribute__((unused)) void *arg)
     return 0;
 }
 
-static inline int is_control_pkt(__attribute__((unused)) const struct rte_mbuf *buf){
-    return 0;
+static inline int is_control_pkt(const struct rte_mbuf *buf)
+{
+    struct dpdk_transport_hdr *hdr;
+    hdr = rte_pktmbuf_mtod_offset(buf, struct dpdk_transport_hdr *,
+                                  sizeof(struct rte_ether_hdr) + sizeof(rte_ipv4_hdr));
+
+    if (hdr->type == DPDK_TRANSPORT_MSGDATA)
+        return 0;
+
+    return 1;
 }
 
 static int lcore_rx(__attribute__((unused)) void *arg)
@@ -439,10 +487,191 @@ static int lcore_rx(__attribute__((unused)) void *arg)
     return 0;
 }
 
-static int lcore_send(__attribute__((unused)) void *arg){
-    return 0;
+static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
+{
+    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
+    uint32_t ip_cksum = 0;
+    ip_cksum += ptr16[0];
+    ip_cksum += ptr16[1];
+    ip_cksum += ptr16[2];
+    ip_cksum += ptr16[3];
+    ip_cksum += ptr16[4];
+    ip_cksum += ptr16[6];
+    ip_cksum += ptr16[7];
+    ip_cksum += ptr16[8];
+    ip_cksum += ptr16[9];
+
+    // Reduce 32 bit checksum to 16 bits and complement it.
+    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
+               (ip_cksum & 0x0000FFFF);
+    if (ip_cksum > 65535)
+        ip_cksum -= 65535;
+    ip_cksum = (~ip_cksum) & 0x0000FFFF;
+    if (ip_cksum == 0)
+        ip_cksum = 0xFFFF;
+    hdr->hdr_checksum = (uint16_t)ip_cksum;
 }
-static int lcore_recv(__attribute__((unused)) void *arg){
+
+static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid)
+{
+    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
+    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
+
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
+    struct dpdk_transport_hdr *dpdk_hdr;
+
+    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
+    ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
+                                       sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+
+    // Initialize DPDK Transport header.
+    dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
+    dpdk_hdr->msg_len = rte_cpu_to_be_32(buf->info->length);
+    dpdk_hdr->pktid = 0;
+    dpdk_hdr->type = DPDK_TRANSPORT_MSGDATA;
+
+    // Initialize IP header.
+    ip_hdr->version_ihl = IP_VHL_DEF;
+    ip_hdr->type_of_service = 0;
+    ip_hdr->fragment_offset = 0;
+    ip_hdr->time_to_live = IP_DEFTTL;
+    ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
+    ip_hdr->packet_id = 0;
+    ip_hdr->total_length = rte_cpu_to_be_16((uint16_t) (sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len));
+    ip_hdr->src_addr = rte_cpu_to_be_32(buf->info->src_ip);
+    ip_hdr->dst_addr = rte_cpu_to_be_32(buf->info->dst_ip);
+
+    set_ipv4_cksum(ip_hdr);
+
+    union
+    {
+        uint64_t as_int;
+        struct rte_ether_addr as_addr;
+    } mac_addr;
+    mac_addr.as_int = rte_cpu_to_be_64(buf->info->src_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->s_addr);
+    mac_addr.as_int = rte_cpu_to_be_64(buf->info->dst_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->d_addr);
+    eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+}
+
+static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32_t msg_id)
+{
+
+    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
+    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
+
+    struct msg_send_record *send_record = rte_malloc(sizeof(struct msg_send_record));
+    send_record->buf = buf;
+    send_record->template_hdr = rte_malloc(total_hdr_size);
+    set_template_hdr(send_record->template_hdr, buf, msgid);
+
+    if (unlikely(rte_hash_add_key_data(hashtbl, next_msgid, (void *)send_record) < 0))
+    {
+        RTE_LOG_DP(DEBUG, HASH,
+                   "%s:Msg loss due to failed rte_hash_add_key_data\n", __func__);
+        rte_free(send_record->template_hdr);
+        rte_free(send_record->buf->info);
+        rte_free(send_record->buf->msg);
+        rte_free(send_record->buf);
+        rte_free(send_record);
+    }
+    else
+    {
+        // send pkts
+        struct rte_mbuf *bufs[BURST_SIZE_TX];
+        uint8_t total_pkts = RTE_DIV_ROUND_UP(buf->info->length, max_pkt_msgdata_len);
+        uint8_t pktid_base;
+        for (pktid_base = 0; pktid_base < total_pkts; pktid_base += BURST_SIZE_TX)
+        {
+            uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, total_pkts - pktid_base);
+            if (unlikely(rte_pktmbuf_alloc_bulk(mbuf_pool, bufs, nb_to_send)))
+                RTE_LOG_DP(DEBUG, RING,
+                           "%s:Packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
+            continue;
+
+            for (uint8_t pktid_offset = 0; pktid_offset < nb_to_send; pktid_offset++)
+            {
+                uint8_t pktid = pktid_base + pktid_offset;
+                struct rte_mbuf *pkt = bufs[pktid_offset];
+                uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * max_pkt_msgdata_len);
+                pkt->data_len = total_hdr_size + msgdata_len;
+                pkt->pkt_len = total_hdr_size + msgdata_len;
+                pkt->port = buf->info->portid;
+                rte_memcpy(rte_pktmbuf_mtod(pkt, void *),
+                           (void *)send_record->template_hdr,
+                           total_hdr_size);
+                if (msgdata_len != max_pkt_msgdata_len){
+                    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
+                                                                         sizeof(struct rte_ether_hdr));
+                    ip_hdr->total_length = rte_cpu_to_be_16(msgdata_len);
+                    set_ipv4_cksum(ip_hdr)
+                }
+                struct dpdk_transport_hdr *dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
+                                                                         sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+                dpdk_hdr->pktid = pktid;
+                rte_memcpy(rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
+                           (void *)&(send_record->buf->msg[pktid * max_pkt_msgdata_len]),
+                           msgdata_len);
+            }
+
+            // enqueue packet buffers to tx_ring
+            uint16_t sent;
+            sent = rte_ring_enqueue_burst(tx_ring,
+                                          (void *)bufs, nb_to_send, NULL);
+            if (unlikely(sent < nb_to_send))
+            {
+                RTE_LOG_DP(DEBUG, RING,
+                           "%s:Packet loss due to full tx_ring\n", __func__);
+                while (sent < nb_to_send)
+                    rte_pktmbuf_free(bufs[sent++]);
+            }
+        }
+    }
+}
+
+static int lcore_send(__attribute__((unused)) void *arg)
+{
+
+    printf("\nCore %u doing send task.\n", rte_lcore_id());
+
+    struct rte_hash *hashtbl = NULL;
+    struct rte_hash_parameters hash_params = {
+        .name = "send_table",
+        .entries = SEND_TABLE_ENTRIES,
+        .key_len = sizeof(uint32_t),
+        .hash_func = rte_hash_crc,
+        .socket_id = rte_socket_id(),
+    };
+
+    hashtbl = rte_hash_create(&hash_params);
+    if (hashtbl == NULL)
+    {
+        rte_exit(EXIT_FAILURE, "Error: failed to create send hash table\n");
+    }
+
+    uint32_t next_msgid = 0;
+    while (!quit_signal_send)
+    {
+        // dequeue and send msgs from send_ring
+        struct msgbuf *buf;
+        if (likely(rte_ring_dequeue(send_ring, (void *)&buf) == 0))
+        {
+            send_msg(buf, hashtbl, next_msgid++)
+        }
+    }
+
+    // process received control messages
+}
+
+rte_hash_free(hashtbl);
+printf("\nCore %u exiting send task.\n", rte_lcore_id());
+return 0;
+}
+static int lcore_recv(__attribute__((unused)) void *arg)
+{
     return 0;
 }
 
