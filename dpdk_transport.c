@@ -1,9 +1,11 @@
 #include "dpdk_transport.h"
 #include <rte_ethdev.h>
+#include <rte_ip.h>
 #include <rte_memcpy.h>
 #include <rte_malloc.h>
 #include <rte_debug.h>
 #include <rte_hash.h>
+#include <rte_hash_crc.h>
 #include <rte_common.h>
 
 #define RX_RING_SIZE 1024
@@ -34,8 +36,8 @@ struct dpdk_transport_hdr
 {
     rte_be32_t msgid;
     rte_be32_t msg_len;
-    rte_be8_t pktid;
-    rte_be8_t type;
+    uint8_t pktid;
+    uint8_t type;
 } __attribute__((__packed__));
 
 struct msgbuf
@@ -76,7 +78,7 @@ static int lcore_tx(void *arg);
 static inline int is_control_pkt(const struct rte_mbuf *buf);
 static int lcore_rx(void *arg);
 static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
-static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid);
+static inline void set_template_hdr(char *template_hdr, const struct msgbuf *buf, uint32_t msgid);
 static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32_t msg_id);
 static int lcore_send(void *arg);
 static int lcore_recv(void *arg);
@@ -411,7 +413,7 @@ static inline int is_control_pkt(const struct rte_mbuf *buf)
 {
     struct dpdk_transport_hdr *hdr;
     hdr = rte_pktmbuf_mtod_offset(buf, struct dpdk_transport_hdr *,
-                                  sizeof(struct rte_ether_hdr) + sizeof(rte_ipv4_hdr));
+                                  sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
     if (hdr->type == DPDK_TRANSPORT_MSGDATA)
         return 0;
@@ -512,7 +514,7 @@ static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
     hdr->hdr_checksum = (uint16_t)ip_cksum;
 }
 
-static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid)
+static inline void set_template_hdr(char *template_hdr, const struct msgbuf *buf, uint32_t msgid)
 {
     uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
     uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
@@ -521,10 +523,9 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_buf *bu
     struct rte_ipv4_hdr *ip_hdr;
     struct dpdk_transport_hdr *dpdk_hdr;
 
-    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
-    ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-    dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
-                                       sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    eth_hdr = (struct rte_ether_hdr *)&template_hdr[0];
+    ip_hdr = (struct rte_ipv4_hdr *)&template_hdr[sizeof(struct rte_ether_hdr)];
+    dpdk_hdr = (struct dpdk_transport_hdr *)&template_hdr[sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)];
 
     // Initialize DPDK Transport header.
     dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
@@ -539,7 +540,7 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_buf *bu
     ip_hdr->time_to_live = IP_DEFTTL;
     ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
     ip_hdr->packet_id = 0;
-    ip_hdr->total_length = rte_cpu_to_be_16((uint16_t) (sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len));
+    ip_hdr->total_length = rte_cpu_to_be_16((uint16_t)(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len));
     ip_hdr->src_addr = rte_cpu_to_be_32(buf->info->src_ip);
     ip_hdr->dst_addr = rte_cpu_to_be_32(buf->info->dst_ip);
 
@@ -557,18 +558,19 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_buf *bu
     eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 }
 
-static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32_t msg_id)
+static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32_t msgid)
 {
 
     uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
     uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
 
-    struct msg_send_record *send_record = rte_malloc(sizeof(struct msg_send_record));
+    struct msg_send_record *send_record = rte_malloc("send_record", sizeof(struct msg_send_record), 0);
     send_record->buf = buf;
-    send_record->template_hdr = rte_malloc(total_hdr_size);
+    send_record->template_hdr = rte_malloc("template_hdr", total_hdr_size, 0);
     set_template_hdr(send_record->template_hdr, buf, msgid);
 
-    if (unlikely(rte_hash_add_key_data(hashtbl, next_msgid, (void *)send_record) < 0))
+    // store send record in hash table
+    if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&msgid, (void *)send_record) < 0))
     {
         RTE_LOG_DP(DEBUG, HASH,
                    "%s:Msg loss due to failed rte_hash_add_key_data\n", __func__);
@@ -580,17 +582,19 @@ static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32
     }
     else
     {
-        // send pkts
+        // break msg into pkts and burst send
         struct rte_mbuf *bufs[BURST_SIZE_TX];
-        uint8_t total_pkts = RTE_DIV_ROUND_UP(buf->info->length, max_pkt_msgdata_len);
-        uint8_t pktid_base;
-        for (pktid_base = 0; pktid_base < total_pkts; pktid_base += BURST_SIZE_TX)
+        uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(buf->info->length, max_pkt_msgdata_len) / max_pkt_msgdata_len;
+
+        for (uint8_t pktid_base = 0; pktid_base < total_pkts; pktid_base += BURST_SIZE_TX)
         {
             uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, total_pkts - pktid_base);
-            if (unlikely(rte_pktmbuf_alloc_bulk(mbuf_pool, bufs, nb_to_send)))
+            if (unlikely(rte_pktmbuf_alloc_bulk(mbuf_pool, bufs, nb_to_send) < 0))
+            {
                 RTE_LOG_DP(DEBUG, RING,
                            "%s:Packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
-            continue;
+                continue;
+            }
 
             for (uint8_t pktid_offset = 0; pktid_offset < nb_to_send; pktid_offset++)
             {
@@ -600,18 +604,27 @@ static inline void send_msg(struct msgbuf *buf, struct rte_hash *hashtbl, uint32
                 pkt->data_len = total_hdr_size + msgdata_len;
                 pkt->pkt_len = total_hdr_size + msgdata_len;
                 pkt->port = buf->info->portid;
+
+                // copy over template header
                 rte_memcpy(rte_pktmbuf_mtod(pkt, void *),
                            (void *)send_record->template_hdr,
                            total_hdr_size);
-                if (msgdata_len != max_pkt_msgdata_len){
+
+                // edit ipv4 packet length and recompute checksum if necessary
+                if (msgdata_len != max_pkt_msgdata_len)
+                {
                     struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
-                                                                         sizeof(struct rte_ether_hdr));
+                                                                          sizeof(struct rte_ether_hdr));
                     ip_hdr->total_length = rte_cpu_to_be_16(msgdata_len);
-                    set_ipv4_cksum(ip_hdr)
+                    set_ipv4_cksum(ip_hdr);
                 }
+
+                // set dpdk transport header pktid
                 struct dpdk_transport_hdr *dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
-                                                                         sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+                                                                              sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
                 dpdk_hdr->pktid = pktid;
+
+                // copy over packet msg data
                 rte_memcpy(rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
                            (void *)&(send_record->buf->msg[pktid * max_pkt_msgdata_len]),
                            msgdata_len);
@@ -655,21 +668,19 @@ static int lcore_send(__attribute__((unused)) void *arg)
     uint32_t next_msgid = 0;
     while (!quit_signal_send)
     {
-        // dequeue and send msgs from send_ring
+        // dequeue and send msg from send_ring
         struct msgbuf *buf;
         if (likely(rte_ring_dequeue(send_ring, (void *)&buf) == 0))
-        {
-            send_msg(buf, hashtbl, next_msgid++)
-        }
+            send_msg(buf, hashtbl, next_msgid++);
+
+        // process received control messages from rx_send_ring
     }
 
-    // process received control messages
+    rte_hash_free(hashtbl);
+    printf("\nCore %u exiting send task.\n", rte_lcore_id());
+    return 0;
 }
 
-rte_hash_free(hashtbl);
-printf("\nCore %u exiting send task.\n", rte_lcore_id());
-return 0;
-}
 static int lcore_recv(__attribute__((unused)) void *arg)
 {
     return 0;

@@ -3,7 +3,7 @@
 
 #define MAX_MSG_SiZE 100000
 
-#include<inttypes.h>
+#include <inttypes.h>
 
 struct msginfo
 {
