@@ -16,7 +16,7 @@ struct msginfo
 };
 
 int init(int argc, char *argv[]);
-int terminate();
+int terminate(void);
 int send_dpdk(const void *buffer, const struct msginfo *info);
 uint32_t recv_dpdk(void *buffer, struct msginfo *info);
 uint64_t port_to_mac(uint16_t portid);

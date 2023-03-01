@@ -2,6 +2,7 @@
 #include <rte_ethdev.h>
 #include <rte_memcpy.h>
 #include <rte_malloc.h>
+#include <rte_debug.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -19,6 +20,24 @@
 #define IP_VERSION 0x40
 #define IP_HDRLEN 0x05 /* default IP header length == five 32-bits words. */
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
+
+struct msgbuf
+{
+    struct msginfo *info;
+    char *msg;
+};
+
+static const struct rte_eth_conf port_conf_default = {
+    .rxmode = {
+        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+    },
+};
+
+struct output_buffer
+{
+    unsigned count;
+    struct rte_mbuf *mbufs[BURST_SIZE_TX];
+};
 
 static int port_init(uint16_t portid);
 static inline void flush_one_port(struct output_buffer *outbuf, uint16_t portid);
@@ -38,23 +57,6 @@ struct rte_mempool *mbuf_pool;
 volatile int quit_signal_tx;
 volatile int quit_signal_rx;
 
-struct msgbuf
-{
-    struct msginfo *info;
-    char *msg;
-};
-
-static const struct rte_eth_conf port_conf_default = {
-    .rxmode = {
-        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-    },
-};
-
-struct output_buffer
-{
-    unsigned count;
-    struct rte_mbuf *mbufs[BURST_SIZE_TX];
-};
 
 int init(int argc, char *argv[])
 {
@@ -106,7 +108,7 @@ int init(int argc, char *argv[])
 				"1 lcore for packet RX\n"
 				"1 lcore for packet TX\n"
 				"1 lcore for send processing\n"
-				"1 lcore for recv processing\n"
+				"1 lcore for recv processing\n");
 
     /* assign each thread to a core */
     unsigned int lcore_id;
@@ -136,17 +138,19 @@ int init(int argc, char *argv[])
             break;
     }
 
+    /* launch threads */
+    quit_signal_tx = 0;
+    quit_signal_rx = 0;
+
 	rte_eal_remote_launch((lcore_function_t *)lcore_rx, NULL, rx_core_id);
 	rte_eal_remote_launch((lcore_function_t *)lcore_tx, NULL, tx_core_id);
 	rte_eal_remote_launch((lcore_function_t *)lcore_send, NULL, send_core_id);
 	rte_eal_remote_launch((lcore_function_t *)lcore_recv, NULL, recv_core_id);
 
-    quit_signal_tx = 0;
-    quit_signal_rx = 0;
     return ret;
 }
 
-int terminate(){
+int terminate(void){
     quit_signal_rx = 1;
 
     unsigned int lcore_id;
@@ -303,14 +307,14 @@ flush_all_ports(struct output_buffer *tx_buffers)
 
     RTE_ETH_FOREACH_DEV(portid)
     {
-        if (tx_buffers[outp].count == 0)
+        if (tx_buffers[portid].count == 0)
             continue;
 
         flush_one_port(&tx_buffers[portid], portid);
     }
 }
 
-static int lcore_tx(void *arg)
+static int lcore_tx(__attribute__((unused)) void *arg)
 {
     static struct output_buffer tx_buffers[RTE_MAX_ETHPORTS];
     const int socket_id = rte_socket_id();
@@ -318,12 +322,12 @@ static int lcore_tx(void *arg)
 
     RTE_ETH_FOREACH_DEV(portid)
     {
-        if (rte_eth_dev_socket_id(port) > 0 &&
-            rte_eth_dev_socket_id(port) != socket_id)
+        if (rte_eth_dev_socket_id(portid) > 0 &&
+            rte_eth_dev_socket_id(portid) != socket_id)
             printf("WARNING, port %u is on remote NUMA node to "
                    "TX thread.\n\tPerformance will not "
                    "be optimal.\n",
-                   port);
+                   portid);
     }
 
     printf("\nCore %u doing packet TX.\n", rte_lcore_id());
@@ -363,11 +367,11 @@ static int lcore_tx(void *arg)
     return 0;
 }
 
-static inline int is_control_pkt(const struct rte_mbuf *buf){
+static inline int is_control_pkt(__attribute__((unused)) const struct rte_mbuf *buf){
     return 0;
 }
 
-static int lcore_rx(void *arg)
+static int lcore_rx(__attribute__((unused)) void *arg)
 {
     const int socket_id = rte_socket_id();
     uint16_t portid;
@@ -412,7 +416,7 @@ static int lcore_rx(void *arg)
                                           (void *)rx_send_bufs, nb_rx_send, NULL);
             if (unlikely(sent < nb_rx_send))
             {
-                RTE_LOG_DP(DEBUG, DISTRAPP,
+                RTE_LOG_DP(DEBUG, RING,
                            "%s:Packet loss due to full rx_send_ring\n", __func__);
                 while (sent < nb_rx_send)
                     rte_pktmbuf_free(rx_send_bufs[sent++]);
@@ -422,7 +426,7 @@ static int lcore_rx(void *arg)
                                           (void *)rx_recv_bufs, nb_rx_recv, NULL);
             if (unlikely(sent < nb_rx_recv))
             {
-                RTE_LOG_DP(DEBUG, DISTRAPP,
+                RTE_LOG_DP(DEBUG, RING,
                            "%s:Packet loss due to full rx_recv_ring\n", __func__);
                 while (sent < nb_rx_recv)
                     rte_pktmbuf_free(rx_recv_bufs[sent++]);
@@ -435,10 +439,10 @@ static int lcore_rx(void *arg)
     return 0;
 }
 
-static int lcore_send(void *arg){
+static int lcore_send(__attribute__((unused)) void *arg){
     return 0;
 }
-static int lcore_recv(void *arg){
+static int lcore_recv(__attribute__((unused)) void *arg){
     return 0;
 }
 
