@@ -12,7 +12,7 @@
 #define SCHED_SEND_RING_SZ 65536
 #define SCHED_RECV_RING_SZ 65536
 #define MBUF_CACHE_SIZE 128
-#define BURST_SIZE 64
+#define BURST_SIZE_RX 64
 #define BURST_SIZE_TX 32
 
 #define IP_DEFTTL 64 /* from RFC 1340. */
@@ -21,10 +21,22 @@
 #define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
 static int port_init(uint16_t portid);
+static inline void flush_one_port(struct output_buffer *outbuf, uint16_t portid);
+static inline void flush_all_ports(struct output_buffer *tx_buffers);
+static int lcore_tx(void *arg);
+static inline int is_control_pkt(const struct rte_mbuf *buf);
+static int lcore_rx(void *arg);
+static int lcore_send(void *arg);
+static int lcore_recv(void *arg);
 
 struct rte_ring *recv_ring;
 struct rte_ring *send_ring;
+struct rte_ring *tx_ring;
+struct rte_ring *rx_recv_ring;
+struct rte_ring *rx_send_ring;
 struct rte_mempool *mbuf_pool;
+volatile int quit_signal_tx;
+volatile int quit_signal_rx;
 
 struct msgbuf
 {
@@ -38,6 +50,12 @@ static const struct rte_eth_conf port_conf_default = {
     },
 };
 
+struct output_buffer
+{
+    unsigned count;
+    struct rte_mbuf *mbufs[BURST_SIZE_TX];
+};
+
 int init(int argc, char *argv[])
 {
     /* Initialize the Environment Abstraction Layer (EAL). */
@@ -47,7 +65,7 @@ int init(int argc, char *argv[])
 
     unsigned nb_ports = rte_eth_dev_count_avail();
     if (nb_ports == 0)
-		rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
+        rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
 
     printf("rte_eth_dev_count_avail()=%d\n", nb_ports);
 
@@ -60,28 +78,91 @@ int init(int argc, char *argv[])
 
     /* initialize all ports */
     uint16_t portid;
-	RTE_ETH_FOREACH_DEV(portid) {
-		printf("Initializing port %u... done\n", portid);
+    RTE_ETH_FOREACH_DEV(portid)
+    {
+        printf("Initializing port %u... done\n", portid);
 
-		if (port_init(portid) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot initialize port %u\n",
-					portid);
-	}
+        if (port_init(portid) != 0)
+            rte_exit(EXIT_FAILURE, "Cannot initialize port %u\n",
+                     portid);
+    }
+
+    /* initialize all rings */
     recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
                                 rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
     send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
                                 rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    // rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
-    // 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    // rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
-    // 		rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    // tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
-    // 		rte_socket_id(), RING_F_SC_DEQ);
+    rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
+                                   rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
+                                   rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
+                              rte_socket_id(), RING_F_SC_DEQ);
 
+	if (rte_lcore_count() < 5)
+		rte_exit(EXIT_FAILURE, "Error, This application needs at "
+				"least 5 logical cores to run:\n"
+				"1 lcore for user application\n"
+				"1 lcore for packet RX\n"
+				"1 lcore for packet TX\n"
+				"1 lcore for send processing\n"
+				"1 lcore for recv processing\n"
+
+    /* assign each thread to a core */
+    unsigned int lcore_id;
+    int rx_core_id = -1;
+    int tx_core_id = -1;
+    int send_core_id = -1;
+    int recv_core_id = -1;
+
+	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		if (rx_core_id < 0) {
+			rx_core_id = lcore_id;
+			printf("RX on core %d\n", lcore_id);
+		}
+		else if (tx_core_id < 0) {
+			tx_core_id = lcore_id;
+			printf("TX on core %d\n", lcore_id);
+		}
+		else if (send_core_id < 0) {
+			send_core_id = lcore_id;
+			printf("Send on core %d\n", lcore_id);
+		}
+		else if (recv_core_id < 0) {
+			recv_core_id = lcore_id;
+			printf("Recv on core %d\n", lcore_id);
+		}
+        else 
+            break;
+    }
+
+	rte_eal_remote_launch((lcore_function_t *)lcore_rx, NULL, rx_core_id);
+	rte_eal_remote_launch((lcore_function_t *)lcore_tx, NULL, tx_core_id);
+	rte_eal_remote_launch((lcore_function_t *)lcore_send, NULL, send_core_id);
+	rte_eal_remote_launch((lcore_function_t *)lcore_recv, NULL, recv_core_id);
+
+    quit_signal_tx = 0;
+    quit_signal_rx = 0;
     return ret;
 }
 
-int senddpdk(const void *buffer, const struct msginfo *info)
+int terminate(){
+    quit_signal_rx = 1;
+
+    unsigned int lcore_id;
+	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		if (rte_eal_wait_lcore(lcore_id) < 0)
+			return -1;
+	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
+    return 0;
+}
+
+
+int send_dpdk(const void *buffer, const struct msginfo *info)
 {
     uint32_t length = info->length;
 
@@ -100,10 +181,10 @@ int senddpdk(const void *buffer, const struct msginfo *info)
     return 0;
 }
 
-uint32_t recvdpdk(void *buffer, struct msginfo *info)
+uint32_t recv_dpdk(void *buffer, struct msginfo *info)
 {
     struct msgbuf *buf;
-    if (rte_ring_dequeue(recv_ring, (void*) &buf) != 0)
+    if (rte_ring_dequeue(recv_ring, (void *)&buf) != 0)
     {
         info->length = 0;
         return 0;
@@ -196,6 +277,168 @@ static int port_init(uint16_t portid)
     /* Enable RX in promiscuous mode for the Ethernet device. */
     retval = rte_eth_promiscuous_enable(portid);
 
+    return 0;
+}
+
+static inline void
+flush_one_port(struct output_buffer *outbuf, uint16_t portid)
+{
+    unsigned int nb_tx = rte_eth_tx_burst(portid, 0,
+                                          outbuf->mbufs, outbuf->count);
+
+    if (unlikely(nb_tx < outbuf->count))
+    {
+        do
+        {
+            rte_pktmbuf_free(outbuf->mbufs[nb_tx]);
+        } while (++nb_tx < outbuf->count);
+    }
+    outbuf->count = 0;
+}
+
+static inline void
+flush_all_ports(struct output_buffer *tx_buffers)
+{
+    uint16_t portid;
+
+    RTE_ETH_FOREACH_DEV(portid)
+    {
+        if (tx_buffers[outp].count == 0)
+            continue;
+
+        flush_one_port(&tx_buffers[portid], portid);
+    }
+}
+
+static int lcore_tx(void *arg)
+{
+    static struct output_buffer tx_buffers[RTE_MAX_ETHPORTS];
+    const int socket_id = rte_socket_id();
+    uint16_t portid;
+
+    RTE_ETH_FOREACH_DEV(portid)
+    {
+        if (rte_eth_dev_socket_id(port) > 0 &&
+            rte_eth_dev_socket_id(port) != socket_id)
+            printf("WARNING, port %u is on remote NUMA node to "
+                   "TX thread.\n\tPerformance will not "
+                   "be optimal.\n",
+                   port);
+    }
+
+    printf("\nCore %u doing packet TX.\n", rte_lcore_id());
+
+    while (!quit_signal_tx)
+    {
+        struct rte_mbuf *bufs[BURST_SIZE_TX];
+        const uint16_t nb_rx = rte_ring_dequeue_burst(tx_ring,
+                                                      (void *)bufs, BURST_SIZE_TX, NULL);
+
+        /* if we get no traffic, flush anything we have */
+        if (unlikely(nb_rx == 0))
+        {
+            flush_all_ports(tx_buffers);
+            continue;
+        }
+
+        /* for traffic we receive, queue it up for transmit */
+        uint16_t i;
+        rte_prefetch_non_temporal((void *)bufs[0]);
+        rte_prefetch_non_temporal((void *)bufs[1]);
+        rte_prefetch_non_temporal((void *)bufs[2]);
+        for (i = 0; i < nb_rx; i++)
+        {
+            rte_prefetch_non_temporal((void *)bufs[i + 3]);
+
+            uint16_t portid = bufs[i]->port;
+            struct output_buffer *outbuf = &tx_buffers[portid];
+            outbuf->mbufs[outbuf->count++] = bufs[i];
+
+            if (outbuf->count == BURST_SIZE_TX)
+                flush_one_port(outbuf, portid);
+        }
+    }
+
+    printf("\nCore %u exiting tx task.\n", rte_lcore_id());
+    return 0;
+}
+
+static inline int is_control_pkt(const struct rte_mbuf *buf){
+    return 0;
+}
+
+static int lcore_rx(void *arg)
+{
+    const int socket_id = rte_socket_id();
+    uint16_t portid;
+    struct rte_mbuf *bufs[BURST_SIZE_RX];
+    struct rte_mbuf *rx_send_bufs[BURST_SIZE_RX];
+    struct rte_mbuf *rx_recv_bufs[BURST_SIZE_RX];
+
+    RTE_ETH_FOREACH_DEV(portid)
+    {
+        if (rte_eth_dev_socket_id(portid) > 0 &&
+            rte_eth_dev_socket_id(portid) != socket_id)
+            printf("WARNING, port %u is on remote NUMA node to "
+                   "RX thread.\n\tPerformance will not "
+                   "be optimal.\n",
+                   portid);
+    }
+
+    printf("\nCore %u doing packet RX.\n", rte_lcore_id());
+
+    while (!quit_signal_rx)
+    {
+        RTE_ETH_FOREACH_DEV(portid)
+        {
+            const uint16_t nb_rx = rte_eth_rx_burst(portid, 0, bufs,
+                                                    BURST_SIZE_RX);
+            if (unlikely(nb_rx == 0))
+                continue;
+
+            uint16_t i;
+            uint16_t nb_rx_send = 0;
+            uint16_t nb_rx_recv = 0;
+            for (i = 0; i < nb_rx; i++)
+            {
+                if (is_control_pkt(bufs[i]))
+                    rx_send_bufs[nb_rx_send++] = bufs[i];
+                else
+                    rx_recv_bufs[nb_rx_recv++] = bufs[i];
+            }
+
+            uint16_t sent;
+            sent = rte_ring_enqueue_burst(rx_send_ring,
+                                          (void *)rx_send_bufs, nb_rx_send, NULL);
+            if (unlikely(sent < nb_rx_send))
+            {
+                RTE_LOG_DP(DEBUG, DISTRAPP,
+                           "%s:Packet loss due to full rx_send_ring\n", __func__);
+                while (sent < nb_rx_send)
+                    rte_pktmbuf_free(rx_send_bufs[sent++]);
+            }
+
+            sent = rte_ring_enqueue_burst(rx_recv_ring,
+                                          (void *)rx_recv_bufs, nb_rx_recv, NULL);
+            if (unlikely(sent < nb_rx_recv))
+            {
+                RTE_LOG_DP(DEBUG, DISTRAPP,
+                           "%s:Packet loss due to full rx_recv_ring\n", __func__);
+                while (sent < nb_rx_recv)
+                    rte_pktmbuf_free(rx_recv_bufs[sent++]);
+            }
+        }
+    }
+
+    printf("\nCore %u exiting rx task.\n", rte_lcore_id());
+    quit_signal_tx = 1;
+    return 0;
+}
+
+static int lcore_send(void *arg){
+    return 0;
+}
+static int lcore_recv(void *arg){
     return 0;
 }
 
