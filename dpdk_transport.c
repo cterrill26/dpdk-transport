@@ -7,6 +7,11 @@
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
 #include <rte_common.h>
+#include "dpdk_tx.h"
+#include "dpdk_rx.h"
+#include "dpdk_recv.h"
+#include "dpdk_send.h"
+#include "dpdk_common.h"
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -17,48 +22,8 @@
 #define SCHED_SEND_RING_SZ 65536
 #define SCHED_RECV_RING_SZ 65536
 #define MBUF_CACHE_SIZE 128
-#define BURST_SIZE_RX 64
-#define BURST_SIZE_TX 32
-#define SEND_TABLE_ENTRIES 1024
-#define RECV_TABLE_ENTRIES 1024
 
-#define IP_DEFTTL 64 /* from RFC 1340. */
-#define IP_VERSION 0x40
-#define IP_HDRLEN 0x05 /* default IP header length == five 32-bits words. */
-#define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
-
-#define IPPROTO_DPDK_TRANSPORT 200
-#define DPDK_TRANSPORT_MSGDATA 0
-#define DPDK_TRANSPORT_COMPLETE 1
-#define DPDK_TRANSPORT_RESEND 2
-
-struct dpdk_transport_hdr
-{
-    rte_be32_t msgid;
-    rte_be32_t msg_len;
-    uint8_t pktid;
-    uint8_t type;
-} __attribute__((__packed__));
-
-struct msg_buf
-{
-    struct msginfo *info;
-    char *msg;
-};
-
-struct msg_recv_record
-{
-    struct msg_buf *buf;
-    uint64_t pkts_received_mask[4]; // mask of received pktids
-    uint8_t nb_pkts_received;
-};
-
-struct msg_key
-{
-    uint32_t src_ip;
-    uint32_t dst_ip;
-    uint32_t msgid;
-};
+struct lcore_params *params;
 
 static const struct rte_eth_conf port_conf_default = {
     .rxmode = {
@@ -66,36 +31,8 @@ static const struct rte_eth_conf port_conf_default = {
     },
 };
 
-struct output_buffer
-{
-    unsigned count;
-    struct rte_mbuf *mbufs[BURST_SIZE_TX];
-};
-
 static int port_init(uint16_t portid);
-static inline void flush_one_port(struct output_buffer *outbuf, uint16_t portid);
-static inline void flush_all_ports(struct output_buffer *tx_buffers);
-static int lcore_tx(void *arg);
-static inline int is_control_pkt(const struct rte_mbuf *buf);
-static int lcore_rx(void *arg);
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
-static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid);
-static inline void send_msg(struct msg_buf *buf, struct rte_hash *hashtbl, uint32_t msg_id);
-static int lcore_send(void *arg);
-static inline void recv_msg(struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key);
-static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl);
-static int lcore_recv(void *arg);
 
-struct rte_ring *recv_ring;
-struct rte_ring *send_ring;
-struct rte_ring *tx_ring;
-struct rte_ring *rx_recv_ring;
-struct rte_ring *rx_send_ring;
-struct rte_mempool *mbuf_pool;
-volatile int quit_signal_tx;
-volatile int quit_signal_rx;
-volatile int quit_signal_send;
-volatile int quit_signal_recv;
 
 int init(int argc, char *argv[])
 {
@@ -110,11 +47,13 @@ int init(int argc, char *argv[])
 
     printf("rte_eth_dev_count_avail()=%d\n", nb_ports);
 
+    params = rte_zmalloc("params", sizeof(struct lcore_params), 0);
+
     /* Creates a new mempool in memory to hold the mbufs. */
-    mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
+    params->mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
                                         MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 
-    if (mbuf_pool == NULL)
+    if (params->mbuf_pool == NULL)
         rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
     /* initialize all ports */
@@ -129,15 +68,15 @@ int init(int argc, char *argv[])
     }
 
     /* initialize all rings */
-    recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
+    params->recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
                                 rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
+    params->send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
                                 rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
+    params->rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
                                    rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
+    params->rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
                                    rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
+    params->tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
                               rte_socket_id(), RING_F_SC_DEQ);
 
     if (rte_lcore_count() < 5)
@@ -183,23 +122,20 @@ int init(int argc, char *argv[])
     }
 
     /* launch threads */
-    quit_signal_tx = 0;
-    quit_signal_rx = 0;
-
-    rte_eal_remote_launch((lcore_function_t *)lcore_rx, NULL, rx_core_id);
-    rte_eal_remote_launch((lcore_function_t *)lcore_tx, NULL, tx_core_id);
-    rte_eal_remote_launch((lcore_function_t *)lcore_send, NULL, send_core_id);
-    rte_eal_remote_launch((lcore_function_t *)lcore_recv, NULL, recv_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_rx, params, rx_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_tx, params, tx_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_send, params, send_core_id);
+    rte_eal_remote_launch((lcore_function_t *)lcore_recv, params, recv_core_id);
 
     return ret;
 }
 
 int terminate(void)
 {
-    quit_signal_rx = 1;
-    quit_signal_tx = 1;
-    quit_signal_recv = 1;
-    quit_signal_send = 1;
+    params->quit_signal_rx = 1;
+    params->quit_signal_tx = 1;
+    params->quit_signal_recv = 1;
+    params->quit_signal_send = 1;
 
     unsigned int lcore_id;
     RTE_LCORE_FOREACH_SLAVE(lcore_id)
@@ -225,7 +161,7 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
     rte_memcpy(buf->info, info, sizeof(struct msginfo));
     rte_memcpy(buf->msg, buffer, length);
 
-    if (rte_ring_enqueue(send_ring, buf) != 0)
+    if (rte_ring_enqueue(params->send_ring, buf) != 0)
     {
         return -1;
     }
@@ -236,7 +172,7 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
 uint32_t recv_dpdk(void *buffer, struct msginfo *info)
 {
     struct msg_buf *buf;
-    if (rte_ring_dequeue(recv_ring, (void *)&buf) != 0)
+    if (rte_ring_dequeue(params->recv_ring, (void *)&buf) != 0)
     {
         info->length = 0;
         return 0;
@@ -332,514 +268,6 @@ static int port_init(uint16_t portid)
     return 0;
 }
 
-static inline void
-flush_one_port(struct output_buffer *outbuf, uint16_t portid)
-{
-    unsigned int nb_tx = rte_eth_tx_burst(portid, 0,
-                                          outbuf->mbufs, outbuf->count);
-
-    if (unlikely(nb_tx < outbuf->count))
-    {
-        do
-        {
-            rte_pktmbuf_free(outbuf->mbufs[nb_tx]);
-        } while (++nb_tx < outbuf->count);
-    }
-    outbuf->count = 0;
-}
-
-static inline void
-flush_all_ports(struct output_buffer *tx_buffers)
-{
-    uint16_t portid;
-
-    RTE_ETH_FOREACH_DEV(portid)
-    {
-        if (tx_buffers[portid].count == 0)
-            continue;
-
-        flush_one_port(&tx_buffers[portid], portid);
-    }
-}
-
-static int lcore_tx(__attribute__((unused)) void *arg)
-{
-    static struct output_buffer tx_buffers[RTE_MAX_ETHPORTS];
-    const int socket_id = rte_socket_id();
-    uint16_t portid;
-
-    RTE_ETH_FOREACH_DEV(portid)
-    {
-        if (rte_eth_dev_socket_id(portid) > 0 &&
-            rte_eth_dev_socket_id(portid) != socket_id)
-            printf("WARNING, port %u is on remote NUMA node to "
-                   "TX thread.\n\tPerformance will not "
-                   "be optimal.\n",
-                   portid);
-    }
-
-    printf("\nCore %u doing packet TX.\n", rte_lcore_id());
-
-    while (!quit_signal_tx)
-    {
-        struct rte_mbuf *bufs[BURST_SIZE_TX];
-        const uint16_t nb_rx = rte_ring_dequeue_burst(tx_ring,
-                                                      (void *)bufs, BURST_SIZE_TX, NULL);
-
-        /* if we get no traffic, flush anything we have */
-        if (unlikely(nb_rx == 0))
-        {
-            flush_all_ports(tx_buffers);
-            continue;
-        }
-        rte_ring_enqueue_burst(rx_recv_ring,
-                               (void *)bufs, nb_rx, NULL);
-        continue;
-
-        /* for traffic we receive, queue it up for transmit */
-        uint16_t i;
-        rte_prefetch_non_temporal((void *)bufs[0]);
-        rte_prefetch_non_temporal((void *)bufs[1]);
-        rte_prefetch_non_temporal((void *)bufs[2]);
-        for (i = 0; i < nb_rx; i++)
-        {
-            rte_prefetch_non_temporal((void *)bufs[i + 3]);
-
-            uint16_t portid = bufs[i]->port;
-            struct output_buffer *outbuf = &tx_buffers[portid];
-            outbuf->mbufs[outbuf->count++] = bufs[i];
-
-            if (outbuf->count == BURST_SIZE_TX)
-                flush_one_port(outbuf, portid);
-        }
-    }
-
-    printf("\nCore %u exiting tx task.\n", rte_lcore_id());
-    return 0;
-}
-
-static inline int is_control_pkt(const struct rte_mbuf *buf)
-{
-    struct dpdk_transport_hdr *hdr;
-    hdr = rte_pktmbuf_mtod_offset(buf, struct dpdk_transport_hdr *,
-                                  sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
-
-    if (hdr->type == DPDK_TRANSPORT_MSGDATA)
-        return 0;
-
-    return 1;
-}
-
-static int lcore_rx(__attribute__((unused)) void *arg)
-{
-    const int socket_id = rte_socket_id();
-    uint16_t portid;
-    struct rte_mbuf *bufs[BURST_SIZE_RX];
-    struct rte_mbuf *rx_send_bufs[BURST_SIZE_RX];
-    struct rte_mbuf *rx_recv_bufs[BURST_SIZE_RX];
-
-    RTE_ETH_FOREACH_DEV(portid)
-    {
-        if (rte_eth_dev_socket_id(portid) > 0 &&
-            rte_eth_dev_socket_id(portid) != socket_id)
-            printf("WARNING, port %u is on remote NUMA node to "
-                   "RX thread.\n\tPerformance will not "
-                   "be optimal.\n",
-                   portid);
-    }
-
-    printf("\nCore %u doing packet RX.\n", rte_lcore_id());
-
-    while (!quit_signal_rx)
-    {
-        RTE_ETH_FOREACH_DEV(portid)
-        {
-            const uint16_t nb_rx = rte_eth_rx_burst(portid, 0, bufs,
-                                                    BURST_SIZE_RX);
-            if (unlikely(nb_rx == 0))
-                continue;
-
-            uint16_t i;
-            uint16_t nb_rx_send = 0;
-            uint16_t nb_rx_recv = 0;
-            for (i = 0; i < nb_rx; i++)
-            {
-                if (is_control_pkt(bufs[i]))
-                    rx_send_bufs[nb_rx_send++] = bufs[i];
-                else
-                    rx_recv_bufs[nb_rx_recv++] = bufs[i];
-            }
-
-            uint16_t sent;
-            sent = rte_ring_enqueue_burst(rx_send_ring,
-                                          (void *)rx_send_bufs, nb_rx_send, NULL);
-            if (unlikely(sent < nb_rx_send))
-            {
-                RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to full rx_send_ring\n", __func__);
-                while (sent < nb_rx_send)
-                    rte_pktmbuf_free(rx_send_bufs[sent++]);
-            }
-
-            sent = rte_ring_enqueue_burst(rx_recv_ring,
-                                          (void *)rx_recv_bufs, nb_rx_recv, NULL);
-            if (unlikely(sent < nb_rx_recv))
-            {
-                RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to full rx_recv_ring\n", __func__);
-                while (sent < nb_rx_recv)
-                    rte_pktmbuf_free(rx_recv_bufs[sent++]);
-            }
-        }
-    }
-
-    printf("\nCore %u exiting rx task.\n", rte_lcore_id());
-    return 0;
-}
-
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
-{
-    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
-    uint32_t ip_cksum = 0;
-    ip_cksum += ptr16[0];
-    ip_cksum += ptr16[1];
-    ip_cksum += ptr16[2];
-    ip_cksum += ptr16[3];
-    ip_cksum += ptr16[4];
-    ip_cksum += ptr16[6];
-    ip_cksum += ptr16[7];
-    ip_cksum += ptr16[8];
-    ip_cksum += ptr16[9];
-
-    // Reduce 32 bit checksum to 16 bits and complement it.
-    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
-               (ip_cksum & 0x0000FFFF);
-    if (ip_cksum > 65535)
-        ip_cksum -= 65535;
-    ip_cksum = (~ip_cksum) & 0x0000FFFF;
-    if (ip_cksum == 0)
-        ip_cksum = 0xFFFF;
-    hdr->hdr_checksum = (uint16_t)ip_cksum;
-}
-
-static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid)
-{
-    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
-    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
-
-    struct rte_ether_hdr *eth_hdr;
-    struct rte_ipv4_hdr *ip_hdr;
-    struct dpdk_transport_hdr *dpdk_hdr;
-
-    eth_hdr = (struct rte_ether_hdr *)&template_hdr[0];
-    ip_hdr = (struct rte_ipv4_hdr *)&template_hdr[sizeof(struct rte_ether_hdr)];
-    dpdk_hdr = (struct dpdk_transport_hdr *)&template_hdr[sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)];
-
-    // Initialize DPDK Transport header.
-    dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
-    dpdk_hdr->msg_len = rte_cpu_to_be_32(buf->info->length);
-    dpdk_hdr->pktid = 0;
-    dpdk_hdr->type = DPDK_TRANSPORT_MSGDATA;
-
-    // Initialize IP header.
-    ip_hdr->version_ihl = IP_VHL_DEF;
-    ip_hdr->type_of_service = 0;
-    ip_hdr->fragment_offset = 0;
-    ip_hdr->time_to_live = IP_DEFTTL;
-    ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
-    ip_hdr->packet_id = 0;
-    ip_hdr->total_length = rte_cpu_to_be_16((uint16_t)(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len));
-    ip_hdr->src_addr = rte_cpu_to_be_32(buf->info->src_ip);
-    ip_hdr->dst_addr = rte_cpu_to_be_32(buf->info->dst_ip);
-
-    set_ipv4_cksum(ip_hdr);
-
-    union
-    {
-        uint64_t as_int;
-        struct rte_ether_addr as_addr;
-    } mac_addr;
-    mac_addr.as_int = rte_cpu_to_be_64(buf->info->src_mac);
-    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->s_addr);
-    mac_addr.as_int = rte_cpu_to_be_64(buf->info->dst_mac);
-    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->d_addr);
-    eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-}
-
-static inline void send_msg(struct msg_buf *buf, struct rte_hash *hashtbl, uint32_t msgid)
-{
-
-    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
-    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
-
-    char *template_hdr = rte_malloc("template_hdr", total_hdr_size, 0);
-    set_template_hdr(template_hdr, buf, msgid);
-
-    struct msg_key key = {.src_ip = buf->info->src_ip, .dst_ip = buf->info->dst_ip, .msgid = msgid};
-    // store msg_buf in hash table
-    if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&key, (void *)buf) < 0))
-    {
-        RTE_LOG_DP(DEBUG, HASH,
-                   "%s:Msg loss due to failed rte_hash_add_key_data\n", __func__);
-        rte_free(buf->info);
-        rte_free(buf->msg);
-        rte_free(buf);
-    }
-    else
-    {
-        // break msg into pkts and burst send
-        struct rte_mbuf *bufs[BURST_SIZE_TX];
-        uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(buf->info->length, max_pkt_msgdata_len) / max_pkt_msgdata_len;
-
-        for (uint8_t pktid_base = 0; pktid_base < total_pkts; pktid_base += BURST_SIZE_TX)
-        {
-            uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, total_pkts - pktid_base);
-            if (unlikely(rte_pktmbuf_alloc_bulk(mbuf_pool, bufs, nb_to_send) < 0))
-            {
-                RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
-                continue;
-            }
-
-            for (uint8_t pktid_offset = 0; pktid_offset < nb_to_send; pktid_offset++)
-            {
-                uint8_t pktid = pktid_base + pktid_offset;
-                struct rte_mbuf *pkt = bufs[pktid_offset];
-                uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * max_pkt_msgdata_len);
-                pkt->data_len = total_hdr_size + msgdata_len;
-                pkt->pkt_len = total_hdr_size + msgdata_len;
-                pkt->port = buf->info->portid;
-
-                // copy over template header
-                rte_memcpy(rte_pktmbuf_mtod(pkt, void *),
-                           (void *)template_hdr,
-                           total_hdr_size);
-
-                // edit ipv4 packet length and recompute checksum if necessary
-                if (msgdata_len != max_pkt_msgdata_len)
-                {
-                    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
-                                                                          sizeof(struct rte_ether_hdr));
-                    ip_hdr->total_length = rte_cpu_to_be_16(msgdata_len);
-                    set_ipv4_cksum(ip_hdr);
-                }
-
-                // set dpdk transport header pktid
-                struct dpdk_transport_hdr *dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
-                                                                              sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
-                dpdk_hdr->pktid = pktid;
-
-                // copy over packet msg data
-                rte_memcpy(rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
-                           (void *)&(buf->msg[pktid * max_pkt_msgdata_len]),
-                           msgdata_len);
-            }
-
-            // enqueue packet buffers to tx_ring
-            uint16_t sent;
-            sent = rte_ring_enqueue_burst(tx_ring,
-                                          (void *)bufs, nb_to_send, NULL);
-            if (unlikely(sent < nb_to_send))
-            {
-                RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to full tx_ring\n", __func__);
-                while (sent < nb_to_send)
-                    rte_pktmbuf_free(bufs[sent++]);
-            }
-        }
-    }
-
-    rte_free(template_hdr);
-}
-
-static int lcore_send(__attribute__((unused)) void *arg)
-{
-
-    printf("\nCore %u doing send task.\n", rte_lcore_id());
-
-    struct rte_hash *hashtbl = NULL;
-    struct rte_hash_parameters hash_params = {
-        .name = "send_table",
-        .entries = SEND_TABLE_ENTRIES,
-        .key_len = sizeof(struct msg_key),
-        .hash_func = rte_hash_crc,
-        .socket_id = rte_socket_id(),
-    };
-
-    hashtbl = rte_hash_create(&hash_params);
-    if (hashtbl == NULL)
-    {
-        rte_exit(EXIT_FAILURE, "Error: failed to create send hash table\n");
-    }
-
-    uint32_t next_msgid = 0;
-    while (!quit_signal_send)
-    {
-        // dequeue and send msg from send_ring
-        struct msg_buf *buf;
-        if (likely(rte_ring_dequeue(send_ring, (void *)&buf) == 0))
-            send_msg(buf, hashtbl, next_msgid++);
-
-        // process received control messages from rx_send_ring
-    }
-
-    rte_hash_free(hashtbl);
-    printf("\nCore %u exiting send task.\n", rte_lcore_id());
-    return 0;
-}
-
-static inline void recv_msg(struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key)
-{
-    // full packet received, pass on to recv_ring
-    rte_hash_del_key(hashtbl, key);
-    if (rte_ring_enqueue(recv_ring, buf) != 0)
-    {
-        RTE_LOG_DP(DEBUG, HASH,
-                   "%s:Msg loss due to failed recv_ring enqueue\n", __func__);
-        rte_free(buf->info);
-        rte_free(buf->msg);
-        rte_free(buf);
-    }
-
-    // TODO send completed msg
-}
-
-static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl)
-{
-    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
-    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
-
-    struct msg_key key;
-    struct rte_ether_hdr *eth_hdr;
-    struct rte_ipv4_hdr *ip_hdr;
-    struct dpdk_transport_hdr *dpdk_hdr;
-
-    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
-    ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-    dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
-                                       sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
-
-    key.src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
-    key.dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
-    key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
-
-    struct msg_recv_record *recv_record;
-    if (rte_hash_lookup_data(hashtbl, &key, (void *)&recv_record) < 0)
-    {
-        // first packet of a new msg
-        // TODO need to take care of repeated pkts
-
-        struct msg_buf *buf = rte_malloc("recv msgbuf", sizeof(struct msg_buf), 0);
-        buf->info = rte_malloc("recv msginfo", sizeof(struct msginfo), 0);
-        buf->msg = rte_malloc("recv msgdata", dpdk_hdr->msg_len, 0);
-
-        union
-        {
-            uint64_t as_int;
-            struct rte_ether_addr as_addr;
-        } mac_addr;
-        rte_ether_addr_copy(&eth_hdr->s_addr, &mac_addr.as_addr);
-        buf->info->src_mac = rte_be_to_cpu_64(mac_addr.as_int);
-        rte_ether_addr_copy(&eth_hdr->d_addr, &mac_addr.as_addr);
-        buf->info->dst_mac = rte_be_to_cpu_64(mac_addr.as_int);
-        buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
-        buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
-        buf->info->portid = pkt->port;
-        buf->info->length = rte_be_to_cpu_32(dpdk_hdr->msg_len);
-
-        uint8_t pktid = dpdk_hdr->pktid;
-        // copy over packet msg data
-        rte_memcpy((void *)&(buf->msg[pktid * max_pkt_msgdata_len]),
-                   rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
-                   pkt->pkt_len);
-
-    printf("received packet\n");
-        if (rte_be_to_cpu_32(dpdk_hdr->msg_len) <= max_pkt_msgdata_len)
-        {
-            recv_msg(buf, hashtbl, &key);
-    printf("received packet\n");
-        }
-        else
-        {
-            // add msg record to hash table
-            recv_record = rte_zmalloc("recv_record", sizeof(struct msg_recv_record), 0);
-            recv_record->buf = buf;
-            recv_record->nb_pkts_received = 1;
-            recv_record->pkts_received_mask[pktid / 64] |= (1 << (pktid % 64));
-
-            if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&key, (void *)recv_record) < 0))
-            {
-                RTE_LOG_DP(DEBUG, HASH,
-                           "%s:Pkt loss due to failed rte_hash_add_key_data\n", __func__);
-                rte_free(buf->info);
-                rte_free(buf->msg);
-                rte_free(buf);
-                rte_free(recv_record);
-            }
-        }
-    }
-    else
-    {
-        uint8_t pktid = dpdk_hdr->pktid;
-        if (likely((recv_record->pkts_received_mask[pktid / 64] & (1 << (pktid % 64))) == 0))
-        {
-            // packet is not a duplicate
-            recv_record->nb_pkts_received++;
-            recv_record->pkts_received_mask[pktid / 64] |= (1 << (pktid % 64));
-
-            // copy over packet msg data
-            rte_memcpy((void *)&(recv_record->buf->msg[pktid * max_pkt_msgdata_len]),
-                       rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
-                       pkt->pkt_len);
-
-            uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(recv_record->buf->info->length, max_pkt_msgdata_len) / max_pkt_msgdata_len;
-            if (recv_record->nb_pkts_received == total_pkts)
-            {
-                recv_msg(recv_record->buf, hashtbl, &key);
-                rte_free(recv_record);
-            }
-        }
-        rte_pktmbuf_free(pkt);
-    }
-}
-
-static int lcore_recv(__attribute__((unused)) void *arg)
-{
-    printf("\nCore %u doing recv task.\n", rte_lcore_id());
-
-    struct rte_hash *hashtbl = NULL;
-    struct rte_hash_parameters hash_params = {
-        .name = "recv_table",
-        .entries = RECV_TABLE_ENTRIES,
-        .key_len = sizeof(struct msg_key),
-        .hash_func = rte_hash_crc,
-        .socket_id = rte_socket_id(),
-    };
-
-    hashtbl = rte_hash_create(&hash_params);
-    if (hashtbl == NULL)
-    {
-        rte_exit(EXIT_FAILURE, "Error: failed to create recv hash table\n");
-    }
-
-    while (!quit_signal_recv)
-    {
-        // dequeue pkts from rx_recv_ring
-        struct rte_mbuf *pkts[BURST_SIZE_RX];
-        unsigned nb_rx = rte_ring_dequeue_burst(rx_recv_ring, (void *)pkts, BURST_SIZE_RX, NULL);
-        if (likely(nb_rx > 0))
-        {
-            for (unsigned i = 0; i < nb_rx; i++)
-                recv_pkt(pkts[i], hashtbl);
-        }
-
-        // send resend requests for missing packets
-    }
-
-    rte_hash_free(hashtbl);
-    printf("\nCore %u exiting recv task.\n", rte_lcore_id());
-    return 0;
-}
 
 // get the uint64_t MAC address for a given portid
 uint64_t port_to_mac(uint16_t portid)
