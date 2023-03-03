@@ -197,6 +197,9 @@ int init(int argc, char *argv[])
 int terminate(void)
 {
     quit_signal_rx = 1;
+    quit_signal_tx = 1;
+    quit_signal_recv = 1;
+    quit_signal_send = 1;
 
     unsigned int lcore_id;
     RTE_LCORE_FOREACH_SLAVE(lcore_id)
@@ -389,6 +392,9 @@ static int lcore_tx(__attribute__((unused)) void *arg)
             flush_all_ports(tx_buffers);
             continue;
         }
+        rte_ring_enqueue_burst(rx_recv_ring,
+                               (void *)bufs, nb_rx, NULL);
+        continue;
 
         /* for traffic we receive, queue it up for transmit */
         uint16_t i;
@@ -488,7 +494,6 @@ static int lcore_rx(__attribute__((unused)) void *arg)
     }
 
     printf("\nCore %u exiting rx task.\n", rte_lcore_id());
-    quit_signal_tx = 1;
     return 0;
 }
 
@@ -570,7 +575,7 @@ static inline void send_msg(struct msg_buf *buf, struct rte_hash *hashtbl, uint3
     char *template_hdr = rte_malloc("template_hdr", total_hdr_size, 0);
     set_template_hdr(template_hdr, buf, msgid);
 
-    struct msg_key key = {.src_ip(buf->info->src_ip), .dst_ip(buf->info->dst_ip), .msgid(msgid)};
+    struct msg_key key = {.src_ip = buf->info->src_ip, .dst_ip = buf->info->dst_ip, .msgid = msgid};
     // store msg_buf in hash table
     if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&key, (void *)buf) < 0))
     {
@@ -683,7 +688,7 @@ static int lcore_send(__attribute__((unused)) void *arg)
     return 0;
 }
 
-static inline void recv_msg(struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key))
+static inline void recv_msg(struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key)
 {
     // full packet received, pass on to recv_ring
     rte_hash_del_key(hashtbl, key);
@@ -719,7 +724,7 @@ static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl)
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
 
     struct msg_recv_record *recv_record;
-    if (rte_hash_lookup_data(hashtbl, &key, &recv_record) < 0)
+    if (rte_hash_lookup_data(hashtbl, &key, (void *)&recv_record) < 0)
     {
         // first packet of a new msg
         // TODO need to take care of repeated pkts
@@ -734,9 +739,9 @@ static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl)
             struct rte_ether_addr as_addr;
         } mac_addr;
         rte_ether_addr_copy(&eth_hdr->s_addr, &mac_addr.as_addr);
-        buf->info->src_mac = rte_be_to_cpu_64(&mac_addr.as_addr);
+        buf->info->src_mac = rte_be_to_cpu_64(mac_addr.as_int);
         rte_ether_addr_copy(&eth_hdr->d_addr, &mac_addr.as_addr);
-        buf->info->dst_mac = rte_be_to_cpu_64(&mac_addr.as_addr);
+        buf->info->dst_mac = rte_be_to_cpu_64(mac_addr.as_int);
         buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
         buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
         buf->info->portid = pkt->port;
@@ -748,9 +753,11 @@ static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl)
                    rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
                    pkt->pkt_len);
 
-        if (dpdk_hdr->msg_len <= max_pkt_msgdata_len)
+    printf("received packet\n");
+        if (rte_be_to_cpu_32(dpdk_hdr->msg_len) <= max_pkt_msgdata_len)
         {
             recv_msg(buf, hashtbl, &key);
+    printf("received packet\n");
         }
         else
         {
@@ -774,7 +781,7 @@ static inline void recv_pkt(struct rte_mbuf *pkt, struct rte_hash *hashtbl)
     else
     {
         uint8_t pktid = dpdk_hdr->pktid;
-        if (likely(recv_record->pkts_received_mask[pktid / 64] & (1 << (pktid % 64)) == 0))
+        if (likely((recv_record->pkts_received_mask[pktid / 64] & (1 << (pktid % 64))) == 0))
         {
             // packet is not a duplicate
             recv_record->nb_pkts_received++;
