@@ -1,4 +1,5 @@
 #include <rte_ethdev.h>
+#include "dpdk_rx.h"
 #include "dpdk_common.h"
 
 static inline int is_control_pkt(const struct rte_mbuf *buf);

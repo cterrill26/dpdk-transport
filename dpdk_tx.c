@@ -1,4 +1,5 @@
 #include <rte_ethdev.h>
+#include "dpdk_tx.h"
 #include "dpdk_common.h"
 #include "dpdk_transport.h"
 

@@ -1,3 +1,6 @@
+#ifndef DPDK_COMMON_H
+#define DPDK_COMMON_H
+
 #include <inttypes.h>
 #include <rte_byteorder.h>
 
@@ -46,3 +49,5 @@ struct msg_key
     uint32_t dst_ip;
     uint32_t msgid;
 };
+
+#endif /* DPDK_COMMON_H */

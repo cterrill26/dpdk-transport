@@ -1,12 +1,7 @@
-#include "dpdk_transport.h"
 #include <rte_ethdev.h>
-#include <rte_ip.h>
-#include <rte_memcpy.h>
 #include <rte_malloc.h>
 #include <rte_debug.h>
-#include <rte_hash.h>
-#include <rte_hash_crc.h>
-#include <rte_common.h>
+#include "dpdk_transport.h"
 #include "dpdk_tx.h"
 #include "dpdk_rx.h"
 #include "dpdk_recv.h"
@@ -144,6 +139,8 @@ int terminate(void)
             return -1;
     }
 
+    rte_free(params);
+
     /* clean up the EAL */
     rte_eal_cleanup();
 
@@ -231,7 +228,7 @@ static int port_init(uint16_t portid)
     for (q = 0; q < rx_rings; q++)
     {
         retval = rte_eth_rx_queue_setup(portid, q, nb_rxd,
-                                        rte_eth_dev_socket_id(portid), NULL, mbuf_pool);
+                                        rte_eth_dev_socket_id(portid), NULL, params->mbuf_pool);
         if (retval < 0)
             return retval;
     }

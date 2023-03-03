@@ -1,5 +1,6 @@
 #include <rte_ethdev.h>
 #include <rte_common.h>
+#include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
 #include "dpdk_transport.h"
@@ -53,7 +54,6 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
     key.src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
     key.dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
-
     struct msg_recv_record *recv_record;
     if (rte_hash_lookup_data(hashtbl, &key, (void *)&recv_record) < 0)
     {

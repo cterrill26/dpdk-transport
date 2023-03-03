@@ -1,4 +1,5 @@
 #include <rte_ethdev.h>
+#include <rte_malloc.h>
 #include <rte_common.h>
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
@@ -142,7 +143,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
     rte_free(template_hdr);
 }
 
-static int lcore_send(struct lcore_params *params)
+int lcore_send(struct lcore_params *params)
 {
 
     printf("\nCore %u doing send task.\n", rte_lcore_id());
