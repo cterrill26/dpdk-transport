@@ -72,6 +72,8 @@ int lcore_tx(struct lcore_params *params)
             flush_all_ports(tx_buffers);
             continue;
         }
+
+        // TODO temporary hack for now before testing accoss actual networks 
         rte_ring_enqueue_burst(params->rx_recv_ring,
                                (void *)bufs, nb_rx, NULL);
         continue;

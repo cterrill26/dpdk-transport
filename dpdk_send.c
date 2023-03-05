@@ -29,7 +29,7 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_buf *bu
     // Initialize DPDK Transport header.
     dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
     dpdk_hdr->msg_len = rte_cpu_to_be_32(buf->info->length);
-    dpdk_hdr->pktid = 0;
+    dpdk_hdr->pktid = 0; //placeholder
     dpdk_hdr->type = DPDK_TRANSPORT_MSGDATA;
 
     // Initialize IP header.
@@ -39,7 +39,7 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_buf *bu
     ip_hdr->time_to_live = IP_DEFTTL;
     ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
     ip_hdr->packet_id = 0;
-    ip_hdr->total_length = rte_cpu_to_be_16((uint16_t)(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len));
+    ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + max_pkt_msgdata_len);
     ip_hdr->src_addr = rte_cpu_to_be_32(buf->info->src_ip);
     ip_hdr->dst_addr = rte_cpu_to_be_32(buf->info->dst_ip);
 
@@ -96,7 +96,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
             {
                 uint8_t pktid = pktid_base + pktid_offset;
                 struct rte_mbuf *pkt = bufs[pktid_offset];
-                uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * max_pkt_msgdata_len);
+                uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * ((uint32_t) max_pkt_msgdata_len));
                 pkt->data_len = total_hdr_size + msgdata_len;
                 pkt->pkt_len = total_hdr_size + msgdata_len;
                 pkt->port = buf->info->portid;
@@ -111,7 +111,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
                 {
                     struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
                                                                           sizeof(struct rte_ether_hdr));
-                    ip_hdr->total_length = rte_cpu_to_be_16(msgdata_len);
+                    ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + msgdata_len);
                     set_ipv4_cksum(ip_hdr);
                 }
 

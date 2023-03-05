@@ -3,6 +3,7 @@
 #include "dpdk_common.h"
 
 static inline int is_control_pkt(const struct rte_mbuf *buf);
+static inline int is_dpdk_transport_pkt(const struct rte_mbuf *buf);
 
 static inline int is_control_pkt(const struct rte_mbuf *buf)
 {
@@ -14,6 +15,20 @@ static inline int is_control_pkt(const struct rte_mbuf *buf)
         return 0;
 
     return 1;
+}
+
+static inline int is_dpdk_transport_pkt(const struct rte_mbuf *buf)
+{
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
+
+    eth_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_ether_hdr *, 0);
+    ip_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+
+    if (rte_be_16_to_cpu(eth_hdr->ether_type) == RTE_ETHER_TYPE_IPV4 && ip_hdr->next_proto_id == IPPROTO_DPDK_TRANSPORT)
+        return 1;
+
+    return 0;
 }
 
 int lcore_rx(struct lcore_params *params)
@@ -50,6 +65,10 @@ int lcore_rx(struct lcore_params *params)
             uint16_t nb_rx_recv = 0;
             for (i = 0; i < nb_rx; i++)
             {
+                if (!is_dpdk_transport_pkt(bufs[i])){
+                    rte_pktmbuf_free(bufs[i]);
+                    continue;
+                }
                 if (is_control_pkt(bufs[i]))
                     rx_send_bufs[nb_rx_send++] = bufs[i];
                 else

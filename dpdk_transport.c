@@ -150,6 +150,8 @@ int terminate(void)
 int send_dpdk(const void *buffer, const struct msginfo *info)
 {
     uint32_t length = info->length;
+    if (length > MAX_MSG_SIZE)
+        return -1;
 
     struct msg_buf *buf = rte_malloc("msg_buf", sizeof(struct msg_buf), 0);
     buf->info = rte_malloc("msg_buf_info", sizeof(struct msginfo), 0);
@@ -160,6 +162,9 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
 
     if (rte_ring_enqueue(params->send_ring, buf) != 0)
     {
+        rte_free(buf->info);
+        rte_free(buf->msg);
+        rte_free(buf);
         return -1;
     }
 

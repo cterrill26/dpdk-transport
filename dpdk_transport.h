@@ -1,7 +1,7 @@
 #ifndef DPDK_TRANSPORT_H
 #define DPDK_TRANSPORT_H
 
-#define MAX_MSG_SiZE 100000
+#define MAX_MSG_SIZE 100000
 
 #include <inttypes.h>
 

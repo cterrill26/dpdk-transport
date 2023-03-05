@@ -128,8 +128,9 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
                 rte_free(recv_record);
             }
         }
-        rte_pktmbuf_free(pkt);
     }
+    
+    rte_pktmbuf_free(pkt);
 }
 
 int lcore_recv(struct lcore_params *params)
