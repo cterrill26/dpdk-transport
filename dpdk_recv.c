@@ -62,7 +62,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
 
         struct msg_buf *buf = rte_malloc("recv msgbuf", sizeof(struct msg_buf), 0);
         buf->info = rte_malloc("recv msginfo", sizeof(struct msginfo), 0);
-        buf->msg = rte_malloc("recv msgdata", dpdk_hdr->msg_len, 0);
+        buf->msg = rte_malloc("recv msgdata", rte_be_to_cpu_32(dpdk_hdr->msg_len), 0);
 
         union
         {
@@ -82,7 +82,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         // copy over packet msg data
         rte_memcpy((void *)&(buf->msg[pktid * max_pkt_msgdata_len]),
                    rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
-                   pkt->pkt_len);
+                   pkt->pkt_len - total_hdr_size);
 
         if (rte_be_to_cpu_32(dpdk_hdr->msg_len) <= max_pkt_msgdata_len)
         {
@@ -110,16 +110,16 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
     else
     {
         uint8_t pktid = dpdk_hdr->pktid;
-        if (likely((recv_record->pkts_received_mask[pktid / 64] & (1 << (pktid % 64))) == 0))
+        if (likely((recv_record->pkts_received_mask[pktid / 64] & (1l << (pktid % 64))) == 0))
         {
             // packet is not a duplicate
             recv_record->nb_pkts_received++;
-            recv_record->pkts_received_mask[pktid / 64] |= (1 << (pktid % 64));
+            recv_record->pkts_received_mask[pktid / 64] |= (1LL << (pktid % 64));
 
             // copy over packet msg data
             rte_memcpy((void *)&(recv_record->buf->msg[pktid * max_pkt_msgdata_len]),
                        rte_pktmbuf_mtod_offset(pkt, void *, total_hdr_size),
-                       pkt->pkt_len);
+                       pkt->pkt_len - total_hdr_size);
 
             uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(recv_record->buf->info->length, max_pkt_msgdata_len) / max_pkt_msgdata_len;
             if (recv_record->nb_pkts_received == total_pkts)

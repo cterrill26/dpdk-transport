@@ -1,34 +1,39 @@
 #include <stdio.h>
 #include "dpdk_transport.h"
-#define MSG_LEN 119
+#define MSG_LEN 100000
 
 int main(int argc, char *argv[]){
     
 
     init(argc, argv);
 
-    int8_t msg[MSG_LEN];
-    int8_t recv[MSG_LEN];
+    int8_t msg1[MSG_LEN];
+    int8_t recv1[MSG_LEN];
+    int8_t msg2[MSG_LEN];
+    int8_t recv2[MSG_LEN];
     for (int i = 0; i < MSG_LEN; i++){
-        msg[i] = i%256;
+        msg1[i] = (i+2)%256;
+        msg2[i] = i%256;
     }
     struct msginfo info;
     info.length = MSG_LEN*sizeof(int8_t);
     printf("Sending\n");
-    int res = send_dpdk(msg, &info);
+    send_dpdk(msg1, &info);
+    send_dpdk(msg2, &info);
 
     printf("Receiving\n");
-    uint32_t len;
-    while((len = recv_dpdk(recv, &info)) == 0)
+    while(recv_dpdk(recv1, &info) == 0)
         continue;
-    printf("%d, %u\n", res, len);
 
-    printf("Sending\n");
-    res = send_dpdk(msg, &info);
-    printf("Receiving\n");
-    while((len = recv_dpdk(recv, &info)) == 0)
+    while(recv_dpdk(recv2, &info) == 0)
         continue;
-    printf("%d, %u\n", res, len);
+
+    for (int i = 0; i < MSG_LEN; i++){
+        if (msg1[i] != recv1[i])
+            printf("Differs 1: %d/n", i);
+        if (msg2[i] != recv2[i])
+            printf("Differs 2: %d/n", i);
+    }
 
     terminate();
 

@@ -25,7 +25,7 @@ static inline int is_dpdk_transport_pkt(const struct rte_mbuf *buf)
     eth_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_ether_hdr *, 0);
     ip_hdr = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
 
-    if (rte_be_16_to_cpu(eth_hdr->ether_type) == RTE_ETHER_TYPE_IPV4 && ip_hdr->next_proto_id == IPPROTO_DPDK_TRANSPORT)
+    if (rte_be_to_cpu_16(eth_hdr->ether_type) == RTE_ETHER_TYPE_IPV4 && ip_hdr->next_proto_id == IPPROTO_DPDK_TRANSPORT)
         return 1;
 
     return 0;
