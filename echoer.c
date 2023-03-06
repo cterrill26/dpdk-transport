@@ -24,7 +24,7 @@ int main(int argc, char *argv[]){
 
 	printf("Echoer received %u bytes\n", info.length);
         uint64_t temp_mac; 
-        uint64_t temp_ip; 
+        uint32_t temp_ip; 
         temp_mac = info.dst_mac;
         info.dst_mac = info.src_mac;
         info.src_mac = temp_mac;
