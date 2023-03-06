@@ -3,21 +3,15 @@
 #include <signal.h>
 #include <unistd.h>
 #include "dpdk_transport.h"
+#include <rte_malloc.h>
 
-void exit(int sig)
-{
-    printf("Caught signal %d\n", sig);
-    terminate();
-    exit(0);
-}
-
+#define NUM_MSGS 1000
 
 int main(int argc, char *argv[]){
     init(argc, argv);
-    signal(SIGINT, exit);
 
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
-    while(1) {
+    for(int i = 0; i < NUM_MSGS; i++) {
         struct msginfo info;
         while (recv_dpdk(recv, &info) == 0)
             continue;
@@ -36,6 +30,12 @@ int main(int argc, char *argv[]){
         else
 	        printf("Echoer echoed %u bytes from msg %u\n", info.length, recv[0]);
     }
+
+    FILE *fptr = fopen("stats.txt","w");
+
+    rte_malloc_dump_stats(fptr, NULL);
+    fclose(fptr);
+    terminate();
 
     return 0;
 }
