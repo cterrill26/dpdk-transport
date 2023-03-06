@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include "dpdk_transport.h"
 
-#define MSG_LEN 100000
+#define MSG_LEN 50000
 #define NUM_MSGS 1000
 
 
@@ -55,14 +55,14 @@ int main(int argc, char *argv[]){
     }
 
 
-    uint8_t msg[MSG_LEN];
+    uint16_t msg[MSG_LEN];
     printf("Initiator Sending\n");
     for (int i = 0; i < NUM_MSGS; i++) {
         for (int j = 0; j < MSG_LEN; j++){
-            msg[j] = (i+j)%256;
+            msg[j] = (i+j)%(1 << 16);
         }
         struct msginfo info;
-        info.length = MSG_LEN*sizeof(int8_t);
+        info.length = MSG_LEN*sizeof(int16_t);
         info.src_ip = src_ip;
         info.dst_ip = dst_ip;
         info.src_mac = port_to_mac(0);
@@ -74,14 +74,14 @@ int main(int argc, char *argv[]){
             printf("Initiator sent msg %d\n", i);
     }
 
-    uint8_t recv[MAX_MSG_SIZE];
+    uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     printf("Initiator Receiving\n");
     for (int i = 0; i < NUM_MSGS; i++) {
         struct msginfo info;
         while (recv_dpdk(recv, &info) == 0)
             continue;
         
-        if (info.length != MSG_LEN*sizeof(int8_t))
+        if (info.length != MSG_LEN*sizeof(int16_t))
             printf("Initiator received wrong message length: %u\n", info.length);
         if (info.src_ip != dst_ip)
             printf("Initiator received wrong src ip: %u\n", info.src_ip);
@@ -93,7 +93,7 @@ int main(int argc, char *argv[]){
             printf("Initiator received wrong dst msc: %lu\n", info.dst_mac);
 
         for (int j = 1; j < MSG_LEN; j++){
-            if (recv[j] != (recv[j-1] + 1)%256)
+            if (recv[j] != (recv[j-1] + 1)%(1 << 16))
                 printf("Initiator received wrong data at index %u: %u\n", j, recv[j]);
         }
         

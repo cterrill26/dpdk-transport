@@ -16,7 +16,7 @@ int main(int argc, char *argv[]){
     init(argc, argv);
     signal(SIGINT, exit);
 
-    uint8_t recv[MAX_MSG_SIZE];
+    uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     while(1) {
         struct msginfo info;
         while (recv_dpdk(recv, &info) == 0)
@@ -32,9 +32,9 @@ int main(int argc, char *argv[]){
         info.src_ip = temp_ip;
 
         if (send_dpdk(recv, &info) < 0)
-	        printf("Echoer failed to echo %u bytes\n", info.length);
+	        printf("Echoer failed to echo %u bytes from msg %u\n", info.length, recv[0]);
         else
-	        printf("Echoer echoed %u bytes\n", info.length);
+	        printf("Echoer echoed %u bytes from msg %u\n", info.length, recv[0]);
     }
 
     return 0;
