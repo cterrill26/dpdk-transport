@@ -74,7 +74,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         rte_ether_addr_copy(&eth_hdr->d_addr, &mac_addr.as_addr);
         buf->info->dst_mac = rte_be_to_cpu_64(mac_addr.as_int);
         buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
-        buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
+        buf->info->dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
         buf->info->portid = pkt->port;
         buf->info->length = rte_be_to_cpu_32(dpdk_hdr->msg_len);
 
