@@ -13,7 +13,7 @@ void exit(int sig)
 
 
 int main(int argc, char *argv[]){
-    int ret = init(argc, argv);
+    init(argc, argv);
     signal(SIGINT, exit);
 
     uint8_t recv[MAX_MSG_SIZE];

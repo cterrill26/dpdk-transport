@@ -2,10 +2,10 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = main
+APP = initiator
 
 # all source are stored in SRCS-y
-SRCS-y := main.c dpdk_transport.c dpdk_tx.c dpdk_rx.c dpdk_send.c dpdk_recv.c
+SRCS-y := initiator.c dpdk_transport.c dpdk_tx.c dpdk_rx.c dpdk_send.c dpdk_recv.c
 
 # Build using pkg-config variables if possible
 $(shell pkg-config --exists libdpdk)

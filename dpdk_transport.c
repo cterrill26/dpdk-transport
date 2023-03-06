@@ -316,7 +316,7 @@ uint64_t string_to_mac(char *s)
                     a + 0, a + 1, a + 2, a + 3, a + 4, a + 5);
     if (rc != 6)
     {
-        fprintf(stderr, "bad MAC address format: %sn", s);
+        fprintf(stderr, "bad MAC address format: %s\n", s);
         exit(1);
     }
 
