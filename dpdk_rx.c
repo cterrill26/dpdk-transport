@@ -69,8 +69,8 @@ int lcore_rx(struct lcore_params *params)
                     rte_pktmbuf_free(bufs[i]);
                     continue;
                 }
-                printf("Received pkt\n");
-                DumpHex(rte_pktmbuf_mtod(bufs[i], char *), bufs[i]->pkt_len);
+                //printf("Received pkt\n");
+                //DumpHex(rte_pktmbuf_mtod(bufs[i], char *), bufs[i]->pkt_len);
                 if (is_control_pkt(bufs[i]))
                     rx_send_bufs[nb_rx_send++] = bufs[i];
                 else
