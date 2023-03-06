@@ -3,7 +3,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include "dpdk_transport.h"
-#include <rte_malloc.h>
 
 #define NUM_MSGS 1000
 
@@ -31,10 +30,6 @@ int main(int argc, char *argv[]){
 	        printf("Echoer echoed %u bytes from msg %u\n", info.length, recv[0]);
     }
 
-    FILE *fptr = fopen("stats.txt","w");
-
-    rte_malloc_dump_stats(fptr, NULL);
-    fclose(fptr);
     terminate();
 
     return 0;
