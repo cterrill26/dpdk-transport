@@ -50,4 +50,6 @@ struct msg_key
     uint32_t msgid;
 };
 
+void DumpHex(const void *data, size_t size);
+
 #endif /* DPDK_COMMON_H */

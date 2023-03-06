@@ -90,6 +90,8 @@ int lcore_tx(struct lcore_params *params)
             uint16_t portid = bufs[i]->port;
             struct output_buffer *outbuf = &tx_buffers[portid];
             outbuf->mbufs[outbuf->count++] = bufs[i];
+            printf("Sending pkt\n");
+            DumpHex(rte_pktmbuf_mtod(bufs[i], char *), bufs[i]->pkt_len);
 
             if (outbuf->count == BURST_SIZE_TX)
                 flush_one_port(outbuf, portid);
