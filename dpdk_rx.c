@@ -65,12 +65,12 @@ int lcore_rx(struct lcore_params *params)
             uint16_t nb_rx_recv = 0;
             for (i = 0; i < nb_rx; i++)
             {
-                printf("Received pkt\n");
-                DumpHex(rte_pktmbuf_mtod(bufs[i], char *), bufs[i]->pkt_len);
                 if (!is_dpdk_transport_pkt(bufs[i])){
                     rte_pktmbuf_free(bufs[i]);
                     continue;
                 }
+                printf("Received pkt\n");
+                DumpHex(rte_pktmbuf_mtod(bufs[i], char *), bufs[i]->pkt_len);
                 if (is_control_pkt(bufs[i]))
                     rx_send_bufs[nb_rx_send++] = bufs[i];
                 else

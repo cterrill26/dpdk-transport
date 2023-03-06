@@ -286,9 +286,10 @@ uint64_t port_to_mac(uint16_t portid)
         struct rte_ether_addr as_addr;
     } mac_addr;
 
+    mac_addr.as_int = 0LL;
     rte_eth_macaddr_get(portid, &mac_addr.as_addr);
 
-    return mac_addr.as_int;
+    return rte_be_to_cpu_64(mac_addr.as_int);
 }
 
 // convert a quad-dot IP string to uint32_t IP address
