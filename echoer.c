@@ -22,7 +22,6 @@ int main(int argc, char *argv[]){
         while (recv_dpdk(recv, &info) == 0)
             continue;
 
-	printf("Echoer received %u bytes\n", info.length);
         uint64_t temp_mac; 
         uint32_t temp_ip; 
         temp_mac = info.dst_mac;
@@ -32,7 +31,10 @@ int main(int argc, char *argv[]){
         info.dst_ip = info.src_ip;
         info.src_ip = temp_ip;
 
-        send_dpdk(recv, &info);
+        if (send_dpdk(recv, &info) < 0)
+	        printf("Echoer failed to echo %u bytes\n", info.length);
+        else
+	        printf("Echoer echoed %u bytes\n", info.length);
     }
 
     return 0;

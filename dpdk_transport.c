@@ -42,6 +42,9 @@ int init(int argc, char *argv[])
 
     printf("rte_eth_dev_count_avail()=%d\n", nb_ports);
 
+    rte_log_set_global_level(RTE_LOG_DEBUG);
+    rte_openlog_stream(stdout);
+
     params = rte_zmalloc("params", sizeof(struct lcore_params), 0);
 
     /* Creates a new mempool in memory to hold the mbufs. */

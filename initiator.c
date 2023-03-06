@@ -3,8 +3,8 @@
 #include <unistd.h>
 #include "dpdk_transport.h"
 
-#define MSG_LEN 10
-#define NUM_MSGS 2
+#define MSG_LEN 100000
+#define NUM_MSGS 1000
 
 
 int main(int argc, char *argv[]){
@@ -55,7 +55,7 @@ int main(int argc, char *argv[]){
     }
 
 
-    int8_t msg[MSG_LEN];
+    uint8_t msg[MSG_LEN];
     printf("Initiator Sending\n");
     for (int i = 0; i < NUM_MSGS; i++) {
         for (int j = 0; j < MSG_LEN; j++){
@@ -68,11 +68,13 @@ int main(int argc, char *argv[]){
         info.src_mac = port_to_mac(0);
         info.dst_mac = dst_mac;
         info.portid = 0;
-        send_dpdk(msg, &info);
-        printf("Initiator sent msg %d\n", i);
+        if (send_dpdk(msg, &info) < 0)
+            printf("Initiator failed to sent msg %d\n", i);
+        else
+            printf("Initiator sent msg %d\n", i);
     }
 
-    int8_t recv[MAX_MSG_SIZE];
+    uint8_t recv[MAX_MSG_SIZE];
     printf("Initiator Receiving\n");
     for (int i = 0; i < NUM_MSGS; i++) {
         struct msginfo info;
