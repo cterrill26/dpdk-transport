@@ -11,6 +11,7 @@
 
 static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid);
 static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl, uint32_t msg_id);
+static inline void recv_ctrl_pkt(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl);
 static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
 static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid)
@@ -143,6 +144,40 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
     rte_free(template_hdr);
 }
 
+static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl){
+    struct msg_key key;
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
+    struct dpdk_transport_hdr *dpdk_hdr;
+
+    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
+    ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
+                                       sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+
+    key.src_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
+    key.dst_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
+    key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
+    struct msg_buf *buf;
+    if (unlikely(rte_hash_lookup_data(hashtbl, &key, (void *)&buf) < 0))
+    {
+        rte_pktmbuf_free(pkt);
+        return;
+    }
+
+    if (dpdk_hdr->type == DPDK_TRANSPORT_COMPLETE){
+        rte_free(buf->info);
+        rte_free(buf->msg);
+        rte_free(buf);
+        rte_hash_del_key(hashtbl, &key);
+    }
+    else{
+        //resend request
+
+    }
+    rte_pktmbuf_free(pkt);
+}
+
 int lcore_send(struct lcore_params *params)
 {
 
@@ -172,6 +207,13 @@ int lcore_send(struct lcore_params *params)
             send_msg(params, buf, hashtbl, next_msgid++);
 
         // process received control messages from rx_send_ring
+        struct rte_mbuf *pkts[BURST_SIZE_RX];
+        unsigned nb_rx = rte_ring_dequeue_burst(params->rx_send_ring, (void *)pkts, BURST_SIZE_RX, NULL);
+        if (nb_rx > 0)
+        {
+            for (unsigned i = 0; i < nb_rx; i++)
+                recv_ctrl_pkt(params, pkts[i], hashtbl);
+        }
     }
 
     rte_hash_free(hashtbl);

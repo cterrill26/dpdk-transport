@@ -16,13 +16,75 @@ struct msg_recv_record
     uint8_t nb_pkts_received;
 };
 
+static inline void set_headers(struct rte_mbuf *pkt, struct msg_buf *buf, uint32_t msgid, uint8_t type, uint32_t msg_len);
 static inline void recv_msg(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key);
 static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl);
 static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
+static inline void set_headers(struct rte_mbuf *pkt, struct msg_buf *buf, uint32_t msgid, uint8_t type, uint32_t msg_len){
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
+    struct dpdk_transport_hdr *dpdk_hdr;
+
+    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
+    ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr *));
+    dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+
+    // Initialize DPDK Transport header.
+    dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
+    dpdk_hdr->msg_len = rte_cpu_to_be_32(msg_len);
+    dpdk_hdr->pktid = 0;
+    dpdk_hdr->type = type;
+
+    // Initialize IP header.
+    ip_hdr->version_ihl = IP_VHL_DEF;
+    ip_hdr->type_of_service = 0;
+    ip_hdr->fragment_offset = 0;
+    ip_hdr->time_to_live = IP_DEFTTL;
+    ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
+    ip_hdr->packet_id = 0;
+    ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + ((uint16_t) msg_len));
+    ip_hdr->src_addr = rte_cpu_to_be_32(buf->info->dst_ip);
+    ip_hdr->dst_addr = rte_cpu_to_be_32(buf->info->src_ip);
+
+    set_ipv4_cksum(ip_hdr);
+
+    union
+    {
+        uint64_t as_int;
+        struct rte_ether_addr as_addr;
+    } mac_addr;
+    mac_addr.as_int = rte_cpu_to_be_64(buf->info->src_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->d_addr);
+    mac_addr.as_int = rte_cpu_to_be_64(buf->info->dst_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->s_addr);
+    eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+}
+
 static inline void recv_msg(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl, struct msg_key *key)
 {
-    // full packet received, pass on to recv_ring
+    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
+
+    // send completed pkt
+    struct rte_mbuf *pkt = rte_pktmbuf_alloc(params->mbuf_pool);
+    if (unlikely(pkt == NULL))
+    {
+        RTE_LOG_DP(DEBUG, HASH,
+            "%s:Completed pkt loss due to filled rte_pktmbuf_alloc\n", __func__);
+    }
+    else{
+        pkt->data_len = total_hdr_size;
+        pkt->pkt_len = total_hdr_size;
+        pkt->port = buf->info->portid;
+        set_headers(pkt, buf, key->msgid, DPDK_TRANSPORT_COMPLETE, 0);
+        if (rte_ring_enqueue(params->tx_ring, (void *)pkt) != 0){
+            RTE_LOG_DP(DEBUG, RING,
+                           "%s:Completed pkt loss due to full tx_ring\n", __func__);
+            rte_pktmbuf_free(pkt);
+        }
+    }
+
+    // pass full msg on to recv_ring
     rte_hash_del_key(hashtbl, key);
     if (rte_ring_enqueue(params->recv_ring, buf) != 0)
     {
@@ -32,8 +94,6 @@ static inline void recv_msg(struct lcore_params *params, struct msg_buf *buf, st
         rte_free(buf->msg);
         rte_free(buf);
     }
-
-    // TODO send completed msg
 }
 
 static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl)
