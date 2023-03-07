@@ -156,6 +156,7 @@ static inline void recv_ctrl_pkt(__attribute__((unused)) struct lcore_params *pa
     key.src_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
     key.dst_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
+    printf("Receved control pkt for msg %u\n", key.msgid);
     struct msg_buf *buf;
     if (unlikely(rte_hash_lookup_data(hashtbl, &key, (void *)&buf) < 0))
     {
