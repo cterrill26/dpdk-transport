@@ -145,6 +145,9 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
 }
 
 static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl){
+    uint16_t total_hdr_size = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr);
+    uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
+
     struct msg_key key;
     struct rte_ether_hdr *eth_hdr;
     struct rte_ipv4_hdr *ip_hdr;
@@ -171,9 +174,73 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
         rte_free(buf);
         rte_hash_del_key(hashtbl, &key);
     }
-    else{
+    else if (dpdk_hdr->type == DPDK_TRANSPORT_RESEND){
         //resend request
+        char *template_hdr = rte_malloc("template_hdr", total_hdr_size, 0);
+        set_template_hdr(template_hdr, buf, key.msgid);
 
+        uint32_t nb_resends = rte_be_to_cpu_32(dpdk_hdr->msg_len);
+        struct rte_mbuf *resend_pkts[BURST_SIZE_TX];
+        uint8_t *pktids = rte_pktmbuf_mtod_offset(pkt, uint8_t *, total_hdr_size);
+
+        for(uint32_t i_base = 0; i_base < nb_resends; i_base+=BURST_SIZE_TX){
+            uint32_t nb_to_send = RTE_MIN(BURST_SIZE_TX, nb_resends - i_base);
+            if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, resend_pkts, nb_to_send) < 0))
+            {
+                RTE_LOG_DP(DEBUG, RING,
+                           "%s:Resend packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
+                continue;
+            }
+
+            for (uint32_t i_offset = 0; i_offset < nb_to_send; i_offset++)
+            {
+                uint32_t i = i_base + i_offset;
+                uint8_t pktid = pktids[i];
+                struct rte_mbuf *resend_pkt = resend_pkts[i_offset];
+                uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * ((uint32_t) max_pkt_msgdata_len));
+                resend_pkt->data_len = total_hdr_size + msgdata_len;
+                resend_pkt->pkt_len = total_hdr_size + msgdata_len;
+                resend_pkt->port = buf->info->portid;
+
+                // copy over template header
+                rte_memcpy(rte_pktmbuf_mtod(resend_pkt, void *),
+                           (void *)template_hdr,
+                           total_hdr_size);
+
+                // edit ipv4 packet length and recompute checksum if necessary
+                if (msgdata_len != max_pkt_msgdata_len)
+                {
+                    struct rte_ipv4_hdr *resend_ip_hdr = rte_pktmbuf_mtod_offset(resend_pkt, struct rte_ipv4_hdr *,
+                                                                          sizeof(struct rte_ether_hdr));
+                    resend_ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + msgdata_len);
+                    set_ipv4_cksum(resend_ip_hdr);
+                }
+
+                // set dpdk transport header pktid
+                struct dpdk_transport_hdr *resend_dpdk_hdr = rte_pktmbuf_mtod_offset(resend_pkt, struct dpdk_transport_hdr *,
+                                                                              sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+                resend_dpdk_hdr->pktid = pktid;
+
+                // copy over packet msg data
+                rte_memcpy(rte_pktmbuf_mtod_offset(resend_pkt, void *, total_hdr_size),
+                           (void *)&(buf->msg[pktid * max_pkt_msgdata_len]),
+                           msgdata_len);
+            }
+
+            // enqueue packet buffers to tx_ring
+            uint16_t sent;
+            sent = rte_ring_enqueue_burst(params->tx_ring,
+                                          (void *)resend_pkts, nb_to_send, NULL);
+            if (unlikely(sent < nb_to_send))
+            {
+                RTE_LOG_DP(DEBUG, RING,
+                           "%s:Resend packet loss due to full tx_ring\n", __func__);
+                while (sent < nb_to_send)
+                    rte_pktmbuf_free(resend_pkts[sent++]);
+            }
+        }
+
+        rte_free(template_hdr);
     }
     rte_pktmbuf_free(pkt);
 }
