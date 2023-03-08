@@ -11,7 +11,7 @@
 
 static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid);
 static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl, uint32_t msg_id);
-static inline void recv_ctrl_pkt(struct lcore_params *params, struct msg_buf *buf, struct rte_hash *hashtbl);
+static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl);
 static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
 static inline void set_template_hdr(char *template_hdr, const struct msg_buf *buf, uint32_t msgid)
@@ -149,11 +149,9 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
     uint16_t max_pkt_msgdata_len = RTE_ETHER_MAX_LEN - total_hdr_size;
 
     struct msg_key key;
-    struct rte_ether_hdr *eth_hdr;
     struct rte_ipv4_hdr *ip_hdr;
     struct dpdk_transport_hdr *dpdk_hdr;
 
-    eth_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ether_hdr *, 0);
     ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
     dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
                                        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
@@ -172,7 +170,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
         rte_free(buf->info);
         rte_free(buf->msg);
         rte_free(buf);
-        rte_hash_del_key(hashtbl, &key);
+        rte_hash_del_key(hashtbl, &key); 
     }
     else if (dpdk_hdr->type == DPDK_TRANSPORT_RESEND){
         //resend request
