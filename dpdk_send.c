@@ -71,7 +71,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
     // store msg_buf in hash table
     if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&key, (void *)buf) < 0))
     {
-        RTE_LOG_DP(DEBUG, HASH,
+        RTE_LOG_DP(INFO, HASH,
                    "%s:Msg loss due to failed rte_hash_add_key_data\n", __func__);
         rte_free(buf->info);
         rte_free(buf->msg);
@@ -88,7 +88,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
             uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, total_pkts - pktid_base);
             if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, bufs, nb_to_send) < 0))
             {
-                RTE_LOG_DP(DEBUG, RING,
+                RTE_LOG_DP(INFO, RING,
                            "%s:Packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
                 continue;
             }
@@ -133,7 +133,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_buf *buf, st
                                           (void *)bufs, nb_to_send, NULL);
             if (unlikely(sent < nb_to_send))
             {
-                RTE_LOG_DP(DEBUG, RING,
+                RTE_LOG_DP(INFO, RING,
                            "%s:Packet loss due to full tx_ring\n", __func__);
                 while (sent < nb_to_send)
                     rte_pktmbuf_free(bufs[sent++]);
@@ -185,7 +185,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
             uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, nb_resends - i_base);
             if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, resend_pkts, nb_to_send) < 0))
             {
-                RTE_LOG_DP(DEBUG, RING,
+                RTE_LOG_DP(INFO, RING,
                            "%s:Resend packet loss due to failed rte_mbuf_raw_alloc\n", __func__);
                 continue;
             }
@@ -231,7 +231,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
                                           (void *)resend_pkts, nb_to_send, NULL);
             if (unlikely(sent < nb_to_send))
             {
-                RTE_LOG_DP(DEBUG, RING,
+                RTE_LOG_DP(INFO, RING,
                            "%s:Resend packet loss due to full tx_ring\n", __func__);
                 while (sent < nb_to_send)
                     rte_pktmbuf_free(resend_pkts[sent++]);
