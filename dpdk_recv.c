@@ -133,8 +133,10 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
             uint64_t as_int;
             struct rte_ether_addr as_addr;
         } mac_addr;
+        mac_addr.as_int = 0LL;
         rte_ether_addr_copy(&eth_hdr->s_addr, &mac_addr.as_addr);
         buf->info->src_mac = rte_be_to_cpu_64(mac_addr.as_int);
+        mac_addr.as_int = 0LL;
         rte_ether_addr_copy(&eth_hdr->d_addr, &mac_addr.as_addr);
         buf->info->dst_mac = rte_be_to_cpu_64(mac_addr.as_int);
         buf->info->src_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
