@@ -278,6 +278,12 @@ static inline void request_resends(struct lcore_params *params, struct rte_hash 
             while (sent < nb_to_send)
                 rte_pktmbuf_free(pkts[sent++]);
         }
+
+        if (sent < BURST_SIZE_TX)
+        {
+            while (sent < BURST_SIZE_TX)
+                rte_pktmbuf_free(pkts[sent++]);
+        }
     }
 }
 
