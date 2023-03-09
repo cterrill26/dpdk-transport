@@ -217,7 +217,7 @@ static inline void request_resends(struct lcore_params *params, struct rte_hash 
 
     uint8_t nb_to_send = 0;
     struct rte_mbuf *pkts[BURST_SIZE_TX];
-    while(rte_hash_iterate(hashtbl, &key, &recv_record, &next) >= 0){
+    while(rte_hash_iterate(hashtbl, (void *)&key, (void *)&recv_record, &next) >= 0){
         if (unlikely(recv_record == NULL)) // this shouldn't be possible
             continue; 
 

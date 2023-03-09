@@ -177,12 +177,12 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
         char *template_hdr = rte_malloc("template_hdr", total_hdr_size, 0);
         set_template_hdr(template_hdr, buf, key.msgid);
 
-        uint32_t nb_resends = rte_be_to_cpu_32(dpdk_hdr->msg_len);
+        uint8_t nb_resends = (uint8_t) rte_be_to_cpu_32(dpdk_hdr->msg_len);
         struct rte_mbuf *resend_pkts[BURST_SIZE_TX];
         uint8_t *pktids = rte_pktmbuf_mtod_offset(pkt, uint8_t *, total_hdr_size);
 
-        for(uint32_t i_base = 0; i_base < nb_resends; i_base+=BURST_SIZE_TX){
-            uint32_t nb_to_send = RTE_MIN(BURST_SIZE_TX, nb_resends - i_base);
+        for(uint8_t i_base = 0; i_base < nb_resends; i_base+=BURST_SIZE_TX){
+            uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, nb_resends - i_base);
             if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, resend_pkts, nb_to_send) < 0))
             {
                 RTE_LOG_DP(DEBUG, RING,
@@ -190,9 +190,9 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
                 continue;
             }
 
-            for (uint32_t i_offset = 0; i_offset < nb_to_send; i_offset++)
+            for (uint8_t i_offset = 0; i_offset < nb_to_send; i_offset++)
             {
-                uint32_t i = i_base + i_offset;
+                uint8_t i = i_base + i_offset;
                 uint8_t pktid = pktids[i];
                 struct rte_mbuf *resend_pkt = resend_pkts[i_offset];
                 uint16_t msgdata_len = RTE_MIN(max_pkt_msgdata_len, buf->info->length - pktid * ((uint32_t) max_pkt_msgdata_len));
