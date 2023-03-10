@@ -73,11 +73,6 @@ int lcore_tx(struct lcore_params *params)
             continue;
         }
 
-        // // TODO temporary hack for now before testing accoss actual networks 
-        // rte_ring_enqueue_burst(params->rx_recv_ring,
-        //                        (void *)bufs, nb_rx, NULL);
-        // continue;
-
         /* for traffic we receive, queue it up for transmit */
         uint16_t i;
         rte_prefetch_non_temporal((void *)bufs[0]);

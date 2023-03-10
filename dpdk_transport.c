@@ -51,6 +51,8 @@ int init(int argc, char *argv[])
     if (params->mbuf_pool == NULL)
         rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
+    rte_atomic16_init(&params->outstanding_sends);
+
     /* initialize all ports */
     uint16_t portid;
     RTE_ETH_FOREACH_DEV(portid)
@@ -139,6 +141,10 @@ int terminate(void)
             return -1;
     }
 
+
+    unsigned int use_count = rte_mempool_in_use_count(params->mbuf_pool);
+    printf("mbuf pool use count: %u\n", use_count);
+
     rte_free(params);
 
     /* clean up the EAL */
@@ -152,17 +158,20 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
     uint32_t length = info->length;
     if (length > MAX_MSG_SIZE)
         return -1;
+    else if (rte_atomic16_read(&params->outstanding_sends) == MAX_OUTSTANDING_SENDS)
+        return -1;
+
+    rte_atomic16_inc(&params->outstanding_sends);
+    
 
     struct msg_buf *buf = rte_malloc("msg_buf", sizeof(struct msg_buf), 0);
-    buf->info = rte_malloc("msg_buf_info", sizeof(struct msginfo), 0);
     buf->msg = rte_malloc("msg_buf_msg", length, 0);
 
-    rte_memcpy(buf->info, info, sizeof(struct msginfo));
+    rte_memcpy(&buf->info, info, sizeof(struct msginfo));
     rte_memcpy(buf->msg, buffer, length);
 
     if (rte_ring_enqueue(params->send_ring, buf) != 0)
     {
-        rte_free(buf->info);
         rte_free(buf->msg);
         rte_free(buf);
         return -1;
@@ -173,20 +182,19 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
 
 uint32_t recv_dpdk(void *buffer, struct msginfo *info)
 {
-    struct msg_buf *buf;
-    if (rte_ring_dequeue(params->recv_ring, (void *)&buf) != 0)
+    struct msg_recv_record *recv_record;
+    if (rte_ring_dequeue(params->recv_ring, (void *)&recv_record) != 0)
     {
         info->length = 0;
         return 0;
     }
 
-    uint32_t length = buf->info->length;
-    rte_memcpy(buffer, buf->msg, length);
-    rte_memcpy(info, buf->info, sizeof(struct msginfo));
+    uint32_t length = recv_record->buf.info.length;
+    rte_memcpy(buffer, recv_record->buf.msg, length);
+    rte_memcpy(info, &recv_record->buf.info, sizeof(struct msginfo));
 
-    rte_free(buf->info);
-    rte_free(buf->msg);
-    rte_free(buf);
+    rte_free(recv_record->buf.msg);
+    rte_free(recv_record);
     return length;
 }
 

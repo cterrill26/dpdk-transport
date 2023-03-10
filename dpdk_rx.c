@@ -63,8 +63,14 @@ int lcore_rx(struct lcore_params *params)
             uint16_t i;
             uint16_t nb_rx_send = 0;
             uint16_t nb_rx_recv = 0;
+
+            rte_prefetch_non_temporal((void *)bufs[0]);
+            rte_prefetch_non_temporal((void *)bufs[1]);
+            rte_prefetch_non_temporal((void *)bufs[2]);
             for (i = 0; i < nb_rx; i++)
             {
+                rte_prefetch_non_temporal((void *)bufs[i+3]);
+
                 if (!is_dpdk_transport_pkt(bufs[i])){
                     rte_pktmbuf_free(bufs[i]);
                     continue;
@@ -83,7 +89,7 @@ int lcore_rx(struct lcore_params *params)
             if (unlikely(sent < nb_rx_send))
             {
                 RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to full rx_send_ring\n", __func__);
+                           "%s:Rx pkt loss due to full rx_send_ring\n", __func__);
                 while (sent < nb_rx_send)
                     rte_pktmbuf_free(rx_send_bufs[sent++]);
             }
@@ -93,7 +99,7 @@ int lcore_rx(struct lcore_params *params)
             if (unlikely(sent < nb_rx_recv))
             {
                 RTE_LOG_DP(DEBUG, RING,
-                           "%s:Packet loss due to full rx_recv_ring\n", __func__);
+                           "%s:Rx pkt loss due to full rx_recv_ring\n", __func__);
                 while (sent < nb_rx_recv)
                     rte_pktmbuf_free(rx_recv_bufs[sent++]);
             }

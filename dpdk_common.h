@@ -3,6 +3,8 @@
 
 #include <inttypes.h>
 #include <rte_byteorder.h>
+#include <rte_atomic.h>
+#include "dpdk_transport.h"
 
 #define BURST_SIZE_RX 64
 #define BURST_SIZE_TX 32
@@ -23,6 +25,7 @@ struct lcore_params {
     struct rte_ring *rx_recv_ring;
     struct rte_ring *rx_send_ring;
     struct rte_mempool *mbuf_pool;
+    rte_atomic16_t outstanding_sends;
     int quit_signal_tx;
     int quit_signal_rx;
     int quit_signal_send;
@@ -39,7 +42,7 @@ struct dpdk_transport_hdr
 
 struct msg_buf
 {
-    struct msginfo *info;
+    struct msginfo info;
     char *msg;
 };
 
@@ -49,6 +52,17 @@ struct msg_key
     uint32_t dst_ip;
     uint32_t msgid;
 };
+
+struct msg_recv_record
+{
+    struct msg_buf buf;
+    uint64_t pkts_received_mask[2]; // mask of received pktids
+    uint8_t nb_pkts_received;
+    uint64_t time;
+};
+
+#define TOTAL_HDR_SIZE (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr))
+#define MAX_PKT_MSGDATA_LEN (RTE_ETHER_MAX_LEN - TOTAL_HDR_SIZE)
 
 void DumpHex(const void *data, size_t size);
 
