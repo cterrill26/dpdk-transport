@@ -7,13 +7,14 @@
 #include "dpdk_transport.h"
 #include "dpdk_recv.h"
 #include "dpdk_common.h"
+#include "linked_hash.h"
 
 #define RESEND_TIME_US 1000
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_buf *buf, uint32_t msgid, uint8_t type, uint32_t data_len);
-static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct rte_hash *hashtbl, struct msg_key *key);
-static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl);
-static inline void request_resends(struct lcore_params *params, struct rte_hash *hashtbl, uint64_t resend_before);
+static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct linked_hash *hashtbl, struct msg_key *key, int32_t pos);
+static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl);
+static inline void request_resends(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t resend_before);
 static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_buf *buf, uint32_t msgid, uint8_t type, uint32_t data_len)
@@ -59,7 +60,7 @@ static inline void set_headers(struct rte_mbuf *pkt, struct msg_buf *buf, uint32
     eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 }
 
-static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct rte_hash *hashtbl, struct msg_key *key)
+static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct linked_hash *hashtbl, struct msg_key *key, int32_t pos)
 {
     // send completed pkt
     struct rte_mbuf *pkt = rte_pktmbuf_alloc(params->mbuf_pool);
@@ -84,13 +85,16 @@ static inline void recv_msg(struct lcore_params *params, struct msg_recv_record 
 
     // pass full msg on to recv_ring
     if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
-        rte_hash_del_key(hashtbl, key);
+        linked_hash_del_key(hashtbl, key);
+    else{
+        // in the case the enqueue fails, the entry will remain in the hashtbl, and the resend_request function
+        // will attempt to enqueue the recv_record later on
+        linked_hash_move_pos_to_front(hashtbl, pos);
+    }
     
-    // in the case the enqueue fails, the entry will remain in the hashtbl, and the resend_request function
-    // will attempt to enqueue the recv_record later on
 }
 
-static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct rte_hash *hashtbl)
+static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl)
 {
     struct msg_key key;
     struct rte_ether_hdr *eth_hdr;
@@ -106,7 +110,8 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
     key.dst_ip = rte_be_to_cpu_32(ip_hdr->dst_addr);
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
     struct msg_recv_record *recv_record;
-    if (rte_hash_lookup_data(hashtbl, &key, (void *)&recv_record) < 0)
+    int32_t pos = linked_hash_lookup_data(hashtbl, &key, (void *)&recv_record);
+    if (pos < 0)
     {
         // first packet of a new msg
         // TODO need to take care of repeated pkts from completed msg
@@ -130,10 +135,11 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         recv_record->buf.info.portid = pkt->port;
         recv_record->buf.info.length = rte_be_to_cpu_32(dpdk_hdr->msg_len);
 
-        if (unlikely(rte_hash_add_key_data(hashtbl, (void *)&key, (void *)recv_record) < 0))
+        pos = linked_hash_add_key_data(hashtbl, (void *)&key, (void *)recv_record);
+        if (unlikely(pos < 0))
         {
             RTE_LOG_DP(INFO, HASH,
-                        "%s:Recv pkt loss due to failed rte_hash_add_key_data\n", __func__);
+                        "%s:Recv pkt loss due to failed linked_hash_add_key_data\n", __func__);
             rte_free(recv_record->buf.msg);
             rte_free(recv_record);
             rte_pktmbuf_free(pkt);
@@ -155,30 +161,32 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
 
         uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(recv_record->buf.info.length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
         if (recv_record->nb_pkts_received == total_pkts)
-            recv_msg(params, recv_record, hashtbl, &key);
+            recv_msg(params, recv_record, hashtbl, &key, pos);
+        else
+            linked_hash_move_pos_to_back(hashtbl, pos);
     }
 
     rte_pktmbuf_free(pkt);
 }
 
-static inline void request_resends(struct lcore_params *params, struct rte_hash *hashtbl, uint64_t resend_before)
+static inline void request_resends(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t resend_before)
 {
-    // TODO make this more efficient by making the hashtable entries a doubly linked list
-
     struct msg_key *key;
     struct msg_recv_record *recv_record;
-    uint32_t next = 0;
+    int32_t next = 0;
 
     uint8_t nb_to_send = 0;
     struct rte_mbuf *pkts[BURST_SIZE_TX];
-    while (rte_hash_iterate(hashtbl, (void *)&key, (void *)&recv_record, &next) >= 0)
+    while (1)
     {
-        if (recv_record->time >= resend_before)
-            continue;
+        int32_t pos = linked_hash_iterate(hashtbl, (void *)&key, (void *)&recv_record, &next);
+        if (pos < 0)
+            break;
 
         uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(recv_record->buf.info.length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
         uint8_t nb_pkts_missing = total_pkts - recv_record->nb_pkts_received;
 
+        // completed msgs will be at the front of the linked hash
         if (unlikely(nb_pkts_missing == 0)){
             // recv_record must have failed to be enqueud in recv_ring earlier, try again
             if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
@@ -186,6 +194,10 @@ static inline void request_resends(struct lcore_params *params, struct rte_hash 
             else
                 continue;
         }
+
+        // passed all the completed msgs in the linked hash
+        if (recv_record->time >= resend_before)
+            break;
 
         if (nb_to_send == 0)
         {
@@ -227,6 +239,7 @@ static inline void request_resends(struct lcore_params *params, struct rte_hash 
         }
 
         recv_record->time = rte_get_timer_cycles();
+        linked_hash_move_pos_to_back(hashtbl, pos);
         nb_to_send++;
 
         if (nb_to_send == BURST_SIZE_TX)
@@ -270,19 +283,20 @@ int lcore_recv(struct lcore_params *params)
 {
     printf("\nCore %u doing recv task.\n", rte_lcore_id());
 
-    struct rte_hash *hashtbl = NULL;
+    struct linked_hash *hashtbl = NULL;
     struct rte_hash_parameters hash_params = {
         .name = "recv_table",
         .entries = MAX_OUTSTANDING_RECVS,
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE
     };
 
-    hashtbl = rte_hash_create(&hash_params);
+    hashtbl = linked_hash_create(&hash_params);
     if (hashtbl == NULL)
     {
-        rte_exit(EXIT_FAILURE, "Error: failed to create recv hash table\n");
+        rte_exit(EXIT_FAILURE, "Error: failed to create recv linked hash\n");
     }
 
     uint64_t prev_resend_request = rte_get_timer_cycles();
@@ -321,9 +335,9 @@ int lcore_recv(struct lcore_params *params)
     }
 
     RTE_LOG(INFO, HASH,
-            "%s:Number of elements in recv hash table: %u\n", __func__, rte_hash_count(hashtbl));
+            "%s:Number of elements in recv linked hash table: %u\n", __func__, linked_hash_count(hashtbl));
 
-    rte_hash_free(hashtbl);
+    linked_hash_free(hashtbl);
     printf("\nCore %u exiting recv task.\n", rte_lcore_id());
     return 0;
 }
