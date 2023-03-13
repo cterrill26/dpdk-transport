@@ -1,5 +1,5 @@
 #include <rte_hash.h>
-#include <rte_ring.h>p
+#include <rte_ring.h>
 #include <rte_malloc.h>
 #include "linked_hash.h"
 
@@ -14,7 +14,7 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
-    struct rte_hash *hashtbl = rte_hash_create(&hash_params);
+    struct rte_hash *hashtbl = rte_hash_create(hash_params);
     if (hashtbl == NULL)
         return NULL;
 
@@ -33,7 +33,7 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
-    for (int32_t i = 1; i <= hash_params->entries; i++)
+    for (int32_t i = 1; i <= ((int32_t) hash_params->entries); i++)
         rte_ring_enqueue(free_nodes, (void *) ((intptr_t) i));
 
 
@@ -229,7 +229,7 @@ int32_t linked_hash_del_pos(struct linked_hash* h, int32_t pos){
     if (unlikely(ret != 0))
         return -1;
 
-    return linked_hash_del_key(h->hashtbl, key);
+    return linked_hash_del_key(h, key);
 }
 
 int32_t linked_hash_iterate(const struct linked_hash* h, void **key, void **data, int32_t *next){

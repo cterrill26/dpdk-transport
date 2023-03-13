@@ -190,7 +190,7 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
         if (unlikely(nb_pkts_missing == 0)){
             // recv_record must have failed to be enqueud in recv_ring earlier, try again
             if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
-                rte_hash_del_key(hashtbl, key);
+                linked_hash_del_key(hashtbl, key);
             else
                 continue;
         }

@@ -12,9 +12,9 @@ struct linked_hash {
     struct rte_hash *hashtbl;
     struct node *nodes;
     struct rte_ring *free_nodes;
-    uint32_t front;
-    uint32_t back;
-    uint32_t size;
+    int32_t front;
+    int32_t back;
+    int32_t size;
 };
 
 // create a new linked hash structure with the given hash_params
