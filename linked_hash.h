@@ -12,8 +12,6 @@ struct linked_hash {
     struct rte_hash *hashtbl;
     struct node *nodes;
     struct rte_ring *free_nodes;
-    int32_t front;
-    int32_t back;
     int32_t size;
 };
 

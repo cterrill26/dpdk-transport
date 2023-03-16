@@ -3,6 +3,12 @@
 #include <rte_malloc.h>
 #include "linked_hash.h"
 
+#define FRONT_POS(h) h->nodes[0].next
+#define BACK_POS(h) h->nodes[0].prev
+#define FRONT_NODE(h) h->nodes[FRONT_POS(h)]
+#define BACK_NODE(h) h->nodes[BACK_POS(h)]
+
+
 struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_params)
 {
     if (hash_params->extra_flag & RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY ||
@@ -57,18 +63,18 @@ int32_t linked_hash_front(const struct linked_hash* h, void **key, void **data){
     if (unlikely(h == NULL || key == NULL || data == NULL))
         return -1;
 
-    if (unlikely(h->front == 0))
+    if (unlikely(FRONT_POS(h) == 0))
         return -1;      
 
-    int32_t tbl_pos = h->nodes[h->front].tbl_pos;
+    int32_t tbl_pos = FRONT_NODE(h).tbl_pos;
 
     int ret = rte_hash_get_key_with_position(h->hashtbl, tbl_pos, key);
     if (ret != 0)
         return -1;
 
-    *data = h->nodes[h->front].data;
+    *data = FRONT_NODE(h).data;
 
-    return h->front;
+    return FRONT_POS(h);
 }
 
 int32_t linked_hash_move_pos_to_front(struct linked_hash* h, int32_t pos){
@@ -79,22 +85,15 @@ int32_t linked_hash_move_pos_to_front(struct linked_hash* h, int32_t pos){
     if (unlikely(n->tbl_pos == 0))
         return -1;
 
-    if (h->front == pos) // already at front
-        return 0;
-    
     //stich together prev and next 
     h->nodes[n->next].prev = n->prev;
     h->nodes[n->prev].next = n->next;
 
-    //update back if necessary
-    if (h->back == pos)
-        h->back = n->prev;
-
     //insert at front
-    h->nodes[h->front].prev = pos;
-    n->next = h->front;
+    FRONT_NODE(h).prev = pos;
+    n->next = FRONT_POS(h);
     n->prev = 0;
-    h->front = pos;
+    FRONT_POS(h) = pos;
 
     return 0;
 }
@@ -107,22 +106,15 @@ int32_t linked_hash_move_pos_to_back(struct linked_hash* h, int32_t pos){
     if (unlikely(n->tbl_pos == 0))
         return -1;
 
-    if (h->back == pos) // already at back
-        return 0;
-    
     //stich together prev and next 
     h->nodes[n->next].prev = n->prev;
     h->nodes[n->prev].next = n->next;
 
-    //update front if necessary
-    if (h->front == pos)
-        h->front = n->next;
-
     //insert at back
-    h->nodes[h->back].next = pos;
-    n->prev = h->back;
+    BACK_NODE(h).next = pos;
+    n->prev = BACK_POS(h);
     n->next = 0;
-    h->back = pos;
+    BACK_POS(h) = pos;
 
     return 0;
 }
@@ -157,11 +149,9 @@ int32_t linked_hash_add_key_data(struct linked_hash* h, const void *key, void *d
 
         h->nodes[((int32_t) pos)].tbl_pos = tbl_pos;
         h->nodes[((int32_t) pos)].next = 0; 
-        h->nodes[((int32_t) pos)].prev = h->back; 
-        h->nodes[h->back].next = ((int32_t) pos);
-        h->back = ((int32_t) pos);
-        if (h->front == 0)
-            h->front = ((int32_t) pos);
+        h->nodes[((int32_t) pos)].prev = BACK_POS(h); 
+        BACK_NODE(h).next = ((int32_t) pos);
+        BACK_POS(h) = ((int32_t) pos);
     }
 
     h->nodes[((int32_t) pos)].data = data;
@@ -204,13 +194,6 @@ int32_t linked_hash_del_key(struct linked_hash* h, const void *key){
     h->nodes[n->next].prev = n->prev;
     h->nodes[n->prev].next = n->next;
 
-    //update front if necessary
-    if (h->front == ((int32_t) pos))
-        h->front = n->next;
-
-    if (h->back == ((int32_t) pos))
-        h->back = n->prev;
-
     n->tbl_pos = 0;
 
     return 0;
@@ -241,10 +224,10 @@ int32_t linked_hash_iterate(const struct linked_hash* h, void **key, void **data
         return -1;
 
     if (pos == 0){
-        if (h->front == 0)
+        if (FRONT_POS(h) == 0)
             return -1;
 
-        pos = h->front;
+        pos = FRONT_POS(h);
     }
 
     struct node *n = &h->nodes[pos];
