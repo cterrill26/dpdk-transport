@@ -66,9 +66,9 @@ int init(int argc, char *argv[])
 
     /* initialize all rings */
     params->recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
-                                rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+                                rte_socket_id(), RING_F_SP_ENQ);
     params->send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
-                                rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+                                rte_socket_id(), RING_F_SC_DEQ);
     params->rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
                                    rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
     params->rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
@@ -158,11 +158,16 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
     uint32_t length = info->length;
     if (length > MAX_MSG_SIZE)
         return -1;
-    else if (rte_atomic16_read(&params->outstanding_sends) == MAX_OUTSTANDING_SENDS)
-        return -1;
-
-    rte_atomic16_inc(&params->outstanding_sends);
     
+    while (1){
+        //atomically increment outstanding sends, ensuring it does not exceed the max amount
+        int16_t sends = rte_atomic16_read(&params->outstanding_sends);
+        if (sends >= MAX_OUTSTANDING_SENDS)
+            return -1;
+
+        if (rte_atomic16_cmpset((volatile uint16_t *) &params->outstanding_sends.cnt, sends, sends + 1) != 0)
+            break;
+    }
 
     struct msg_buf *buf = rte_malloc("msg_buf", sizeof(struct msg_buf), 0);
     buf->msg = rte_malloc("msg_buf_msg", length, 0);
