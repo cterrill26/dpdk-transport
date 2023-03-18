@@ -1,10 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include "dpdk_transport.h"
 
 #define MSG_LEN 50000
-#define NUM_MSGS 1000
+#define NUM_MSGS 100
 
 
 int main(int argc, char *argv[]){
@@ -100,6 +101,7 @@ int main(int argc, char *argv[]){
         printf("Initiator received msg %u\n", recv[0]);
     }
 
+    sleep(2);
     terminate();
 
     return 0;

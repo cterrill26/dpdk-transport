@@ -20,17 +20,21 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
+    char s[100];
+
     struct rte_hash *hashtbl = rte_hash_create(hash_params);
     if (hashtbl == NULL)
         return NULL;
 
-    struct node *nodes = rte_zmalloc("linked hash nodes", (hash_params->entries + 1) * sizeof(struct node), 0);
+    sprintf(s, "%s linked hash nodes", hash_params->name);
+    struct node *nodes = rte_zmalloc(s, (hash_params->entries + 1) * sizeof(struct node), 0);
     if (nodes == NULL){
         rte_hash_free(hashtbl);
         return NULL;
     }
 
-    struct rte_ring *free_nodes = rte_ring_create("free nodes", hash_params->entries,
+    sprintf(s, "%s free nodes", hash_params->name);
+    struct rte_ring *free_nodes = rte_ring_create(s, hash_params->entries,
                                      rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
 
     if (free_nodes == NULL){
@@ -39,11 +43,15 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
-    for (int32_t i = 1; i <= ((int32_t) hash_params->entries); i++)
+    nodes[0].tbl_pos = -1;
+    for (int32_t i = 1; i <= ((int32_t) hash_params->entries); i++){
         rte_ring_enqueue(free_nodes, (void *) ((intptr_t) i));
+        nodes[i].tbl_pos = -1;
+    }
 
 
-    struct linked_hash *h = rte_zmalloc("linked hash", sizeof(struct linked_hash), 0);
+    sprintf(s, "%s linked hash", hash_params->name);
+    struct linked_hash *h = rte_zmalloc(s, sizeof(struct linked_hash), 0);
     if (h == NULL){
         rte_hash_free(hashtbl);
         rte_ring_free(free_nodes);
@@ -82,7 +90,7 @@ int32_t linked_hash_move_pos_to_front(struct linked_hash* h, int32_t pos){
         return -1;
 
     struct node *n = &h->nodes[pos];
-    if (unlikely(n->tbl_pos == 0))
+    if (unlikely(n->tbl_pos < 0))
         return -1;
 
     //stich together prev and next 
@@ -103,7 +111,7 @@ int32_t linked_hash_move_pos_to_back(struct linked_hash* h, int32_t pos){
         return -1;
 
     struct node *n = &h->nodes[pos];
-    if (unlikely(n->tbl_pos == 0))
+    if (unlikely(n->tbl_pos < 0))
         return -1;
 
     //stich together prev and next 
@@ -184,7 +192,8 @@ int32_t linked_hash_del_key(struct linked_hash* h, const void *key){
     if(ret < 0)
         return -1;
 
-    rte_hash_del_key_with_hash(h->hashtbl, key, hash);
+    if (rte_hash_del_key_with_hash(h->hashtbl, key, hash) < 0)
+        return -1;
 
     rte_ring_enqueue(h->free_nodes, (void*)pos);
 
@@ -194,7 +203,7 @@ int32_t linked_hash_del_key(struct linked_hash* h, const void *key){
     h->nodes[n->next].prev = n->prev;
     h->nodes[n->prev].next = n->next;
 
-    n->tbl_pos = 0;
+    n->tbl_pos = -1;
 
     return 0;
 }
@@ -204,7 +213,7 @@ int32_t linked_hash_del_pos(struct linked_hash* h, int32_t pos){
         return -1;
 
     struct node *n = &h->nodes[pos];
-    if (n->tbl_pos == 0)
+    if (n->tbl_pos < 0)
         return -1;
 
     void *key;
@@ -231,7 +240,7 @@ int32_t linked_hash_iterate(const struct linked_hash* h, void **key, void **data
     }
 
     struct node *n = &h->nodes[pos];
-    if (unlikely(n->tbl_pos == 0))
+    if (unlikely(n->tbl_pos < 0))
         return -1;
     
     void *key_lookup;
