@@ -20,6 +20,12 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
+    if ((hash_params->entries & (hash_params->entries + 1)) != 0){
+        RTE_LOG(ERR, HASH,
+                "%s:Linked hash size must be power of 2 minus 1, size: %u\n", __func__, hash_params->entries);
+        return NULL;
+    }
+
     char s[100];
 
     struct rte_hash *hashtbl = rte_hash_create(hash_params);
@@ -34,7 +40,7 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
     }
 
     sprintf(s, "%s free nodes", hash_params->name);
-    struct rte_ring *free_nodes = rte_ring_create(s, hash_params->entries,
+    struct rte_ring *free_nodes = rte_ring_create(s, hash_params->entries + 1,
                                      rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
 
     if (free_nodes == NULL){
@@ -141,7 +147,7 @@ int32_t linked_hash_add_key_data(struct linked_hash* h, const void *key, void *d
         ret = rte_ring_dequeue(h->free_nodes, (void *)&pos);
         if (unlikely(ret < 0)) //linked hash is full
             return -1;
-        
+
         ret = rte_hash_add_key_with_hash_data(h->hashtbl, key, hash, (void *)pos);
 
         if (unlikely(ret < 0)){

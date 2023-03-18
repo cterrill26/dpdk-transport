@@ -370,6 +370,9 @@ int lcore_recv(struct lcore_params *params)
     RTE_LOG(INFO, HASH,
             "%s:Number of elements in recv linked hash table: %u\n", __func__, linked_hash_count(hashtbl));
 
+    RTE_LOG(INFO, HASH,
+            "%s:Number of elements in completed linked hash table: %u\n", __func__, linked_hash_count(completed));
+
     linked_hash_free(hashtbl);
     printf("\nCore %u exiting recv task.\n", rte_lcore_id());
     return 0;
