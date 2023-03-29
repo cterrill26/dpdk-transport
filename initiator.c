@@ -62,7 +62,7 @@ int main(int argc, char *argv[]){
         for (int j = 0; j < MSG_LEN; j++){
             msg[j] = (i+j)%(1 << 16);
         }
-        struct msginfo info;
+        struct msg_info info;
         info.length = MSG_LEN*sizeof(int16_t);
         info.src_ip = src_ip;
         info.dst_ip = dst_ip;
@@ -78,7 +78,7 @@ int main(int argc, char *argv[]){
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     printf("Initiator Receiving\n");
     for (int i = 0; i < NUM_MSGS; i++) {
-        struct msginfo info;
+        struct msg_info info;
         while (recv_dpdk(recv, &info) == 0)
             continue;
         

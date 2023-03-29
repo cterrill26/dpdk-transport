@@ -153,7 +153,7 @@ int terminate(void)
     return 0;
 }
 
-int send_dpdk(const void *buffer, const struct msginfo *info)
+int send_dpdk(const void *buffer, const struct msg_info *info)
 {
     uint32_t length = info->length;
     if (length > MAX_MSG_SIZE)
@@ -169,23 +169,23 @@ int send_dpdk(const void *buffer, const struct msginfo *info)
             break;
     }
 
-    struct msg_buf *buf = rte_malloc("msg_buf", sizeof(struct msg_buf), 0);
-    buf->msg = rte_malloc("msg_buf_msg", length, 0);
+    struct msg_send_record *send_record = rte_malloc("msg_send_record", sizeof(struct msg_send_record), 0);
+    send_record->msg = rte_malloc("msg_send_record_msg", length, 0);
 
-    rte_memcpy(&buf->info, info, sizeof(struct msginfo));
-    rte_memcpy(buf->msg, buffer, length);
+    rte_memcpy(&send_record->info, info, sizeof(struct msg_info));
+    rte_memcpy(send_record->msg, buffer, length);
 
-    if (rte_ring_enqueue(params->send_ring, buf) != 0)
+    if (rte_ring_enqueue(params->send_ring, send_record) != 0)
     {
-        rte_free(buf->msg);
-        rte_free(buf);
+        rte_free(send_record->msg);
+        rte_free(send_record);
         return -1;
     }
 
     return 0;
 }
 
-uint32_t recv_dpdk(void *buffer, struct msginfo *info)
+uint32_t recv_dpdk(void *buffer, struct msg_info *info)
 {
     struct msg_recv_record *recv_record;
     if (rte_ring_dequeue(params->recv_ring, (void *)&recv_record) != 0)
@@ -194,11 +194,11 @@ uint32_t recv_dpdk(void *buffer, struct msginfo *info)
         return 0;
     }
 
-    uint32_t length = recv_record->buf.info.length;
-    rte_memcpy(buffer, recv_record->buf.msg, length);
-    rte_memcpy(info, &recv_record->buf.info, sizeof(struct msginfo));
+    uint32_t length = recv_record->info.length;
+    rte_memcpy(buffer, recv_record->msg, length);
+    rte_memcpy(info, &recv_record->info, sizeof(struct msg_info));
 
-    rte_free(recv_record->buf.msg);
+    rte_free(recv_record->msg);
     rte_free(recv_record);
     return length;
 }

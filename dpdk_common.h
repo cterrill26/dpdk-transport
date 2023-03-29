@@ -40,12 +40,6 @@ struct dpdk_transport_hdr
     uint8_t type;
 } __attribute__((__packed__));
 
-struct msg_buf
-{
-    struct msginfo info;
-    char *msg;
-};
-
 struct msg_key
 {
     uint32_t src_ip;
@@ -53,9 +47,17 @@ struct msg_key
     uint32_t msgid;
 };
 
+struct msg_send_record
+{
+    char *msg;
+    struct msg_info info;
+    uint64_t time;
+};
+
 struct msg_recv_record
 {
-    struct msg_buf buf;
+    char *msg;
+    struct msg_info info;
     uint64_t pkts_received_mask[2]; // mask of received pktids
     uint8_t nb_pkts_received;
     uint64_t time;

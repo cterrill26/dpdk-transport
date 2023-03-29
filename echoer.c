@@ -11,7 +11,7 @@ int main(int argc, char *argv[]){
 
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     for(int i = 0; i < NUM_MSGS; i++) {
-        struct msginfo info;
+        struct msg_info info;
         while (recv_dpdk(recv, &info) == 0)
             continue;
 
