@@ -20,6 +20,13 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         return NULL;
     }
 
+    if ((hash_params->extra_flag & RTE_HASH_EXTRA_FLAGS_EXT_TABLE) == 0){
+        RTE_LOG(ERR, HASH,
+                "%s:The RTE_HASH_EXTRA_FLAGS_EXT_TABLE must be set for the rte_hash_params of a linked hash\n", __func__);
+        return NULL;
+    }
+
+
     if ((hash_params->entries & (hash_params->entries + 1)) != 0){
         RTE_LOG(ERR, HASH,
                 "%s:Linked hash size must be power of 2 minus 1, size: %u\n", __func__, hash_params->entries);

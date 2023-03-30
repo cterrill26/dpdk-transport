@@ -331,6 +331,7 @@ int lcore_send(struct lcore_params *params)
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE
     };
 
     hashtbl = linked_hash_create(&hash_params);

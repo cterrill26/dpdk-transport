@@ -4,8 +4,8 @@
 #include <time.h>
 #include "dpdk_transport.h"
 
-#define MSG_LEN 50000
-#define NUM_MSGS 100
+#define MSG_LEN 500
+#define NUM_MSGS 100000
 
 
 int main(int argc, char *argv[]){
@@ -69,10 +69,8 @@ int main(int argc, char *argv[]){
         info.src_mac = port_to_mac(0);
         info.dst_mac = dst_mac;
         info.portid = 0;
-        if (send_dpdk(msg, &info) < 0)
-            printf("Initiator failed to sent msg %d\n", i);
-        else
-            printf("Initiator sent msg %d\n", i);
+        while (send_dpdk(msg, &info) < 0)
+            continue;
     }
 
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
@@ -98,7 +96,7 @@ int main(int argc, char *argv[]){
                 printf("Initiator received wrong data at index %u: %u\n", j, recv[j]);
         }
         
-        printf("Initiator received msg %u\n", recv[0]);
+        //printf("Initiator received msg %u\n", recv[0]);
     }
 
     sleep(2);
