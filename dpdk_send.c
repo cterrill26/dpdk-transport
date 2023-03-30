@@ -276,7 +276,7 @@ static inline void send_probes(struct lcore_params *params, struct linked_hash *
 
         struct dpdk_transport_hdr *dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
                                                                               sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
-        dpdk_hdr->pktid = ~0;
+        dpdk_hdr->pktid = 0xFF;
 
         send_record->time = rte_get_timer_cycles();
         linked_hash_move_pos_to_back(hashtbl, pos);

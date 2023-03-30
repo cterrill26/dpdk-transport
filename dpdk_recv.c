@@ -139,7 +139,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         void *d;
         if (linked_hash_lookup_data(completed, &key, &d) >= 0){
             // this is a pkt from a completed message
-            if (pktid == ~0){
+            if ((pktid & 0xFF) == 0xFF){
                 //msg probe, sender never received completed pkt
                 struct msg_info info;
                 mac_addr.as_int = 0LL;
@@ -186,7 +186,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         }
     }
 
-    if ((pktid != ~0) && likely((recv_record->pkts_received_mask[pktid / 64] & (1LL << (pktid % 64))) == 0))
+    if (((pktid & 0xFF) != 0xFF) && likely((recv_record->pkts_received_mask[pktid / 64] & (1LL << (pktid % 64))) == 0))
     {
         recv_record->nb_pkts_received++;
         recv_record->pkts_received_mask[pktid / 64] |= (1LL << (pktid % 64));
