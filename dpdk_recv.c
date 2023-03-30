@@ -10,6 +10,7 @@
 #include "linked_hash.h"
 
 #define RESEND_TIME_US 1000LL
+#define MAX_UNANSWERED_RESEND_REQUESTS 100
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint32_t msgid, uint8_t type, uint32_t data_len);
 static inline void send_completed_pkt(struct lcore_params *params, struct msg_info *info, uint32_t msgid);
@@ -191,6 +192,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         recv_record->nb_pkts_received++;
         recv_record->pkts_received_mask[pktid / 64] |= (1LL << (pktid % 64));
         recv_record->time = rte_get_timer_cycles();
+        recv_record->nb_resend_requests = 0;
 
         // copy over packet msg data
         rte_memcpy((void *)&(recv_record->msg[pktid * MAX_PKT_MSGDATA_LEN]),
@@ -229,13 +231,22 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
             // recv_record must have failed to be enqueud in recv_ring earlier, try again
             if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
                 linked_hash_del_key(hashtbl, key);
-            else
-                continue;
+            
+            continue;
         }
 
         // passed all the completed msgs in the linked hash
         if (recv_record->time >= resend_before)
             break;
+
+        if (recv_record->nb_resend_requests >= MAX_UNANSWERED_RESEND_REQUESTS){
+            RTE_LOG_DP(INFO, MBUF,
+                        "%s:Deleted recv_record after %d unasnwered resend requests\n", __func__, MAX_UNANSWERED_RESEND_REQUESTS);
+            linked_hash_del_key(hashtbl, key);
+            rte_free(recv_record->msg);
+            rte_free(recv_record);
+            continue;
+        }
 
         if (nb_to_send == 0)
         {
@@ -278,6 +289,7 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
         }
 
         recv_record->time = rte_get_timer_cycles();
+        recv_record->nb_resend_requests++;
         linked_hash_move_pos_to_back(hashtbl, pos);
         nb_to_send++;
 

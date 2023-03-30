@@ -59,8 +59,9 @@ struct msg_recv_record
     char *msg;
     struct msg_info info;
     uint64_t pkts_received_mask[2]; // mask of received pktids
-    uint8_t nb_pkts_received;
     uint64_t time;
+    uint8_t nb_pkts_received;
+    uint8_t nb_resend_requests;
 };
 
 #define TOTAL_HDR_SIZE (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr))
