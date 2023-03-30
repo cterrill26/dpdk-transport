@@ -137,7 +137,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         } mac_addr;
 
         void *d;
-        if (linked_hash_lookup_data(completed, &key, &d) >= 0){
+        if (unlikely(linked_hash_lookup_data(completed, &key, &d) >= 0)){
             // this is a pkt from a completed message
             if ((pktid & 0xFF) == 0xFF){
                 //msg probe, sender never received completed pkt
@@ -177,7 +177,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         pos = linked_hash_add_key_data(hashtbl, (void *)&key, (void *)recv_record);
         if (unlikely(pos < 0))
         {
-            RTE_LOG_DP(INFO, HASH,
+            RTE_LOG_DP(DEBUG, HASH,
                         "%s:Recv pkt loss due to failed linked_hash_add_key_data\n", __func__);
             rte_free(recv_record->msg);
             rte_free(recv_record);

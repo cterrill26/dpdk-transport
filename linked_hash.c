@@ -15,20 +15,20 @@ struct linked_hash* linked_hash_create(const struct rte_hash_parameters *hash_pa
         hash_params->extra_flag & RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD ||
         hash_params->extra_flag & RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF)
     {
-        RTE_LOG(ERR, HASH,
+        RTE_LOG_DP(ERR, HASH,
                 "%s:Concurrency is not currently supported for linked_hash\n", __func__);
         return NULL;
     }
 
     if ((hash_params->extra_flag & RTE_HASH_EXTRA_FLAGS_EXT_TABLE) == 0){
-        RTE_LOG(ERR, HASH,
+        RTE_LOG_DP(ERR, HASH,
                 "%s:The RTE_HASH_EXTRA_FLAGS_EXT_TABLE must be set for the rte_hash_params of a linked hash\n", __func__);
         return NULL;
     }
 
 
     if ((hash_params->entries & (hash_params->entries + 1)) != 0){
-        RTE_LOG(ERR, HASH,
+        RTE_LOG_DP(ERR, HASH,
                 "%s:Linked hash size must be power of 2 minus 1, size: %u\n", __func__, hash_params->entries);
         return NULL;
     }
@@ -158,7 +158,7 @@ int32_t linked_hash_add_key_data(struct linked_hash* h, const void *key, void *d
         ret = rte_hash_add_key_with_hash_data(h->hashtbl, key, hash, (void *)pos);
 
         if (unlikely(ret < 0)){
-            RTE_LOG_DP(INFO, HASH,
+            RTE_LOG_DP(ERR, HASH,
                 "%s:Unexpected hash table key data insertion error\n", __func__);
             rte_ring_enqueue(h->free_nodes, (void*)pos);
             return -1;
