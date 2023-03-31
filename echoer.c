@@ -12,7 +12,7 @@ int main(int argc, char *argv[]){
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     for(int i = 0; i < NUM_MSGS; i++) {
         struct msg_info info;
-        while (recv_dpdk(recv, &info) == 0)
+        while (recv_dpdk(recv, &info, NULL) == 0)
             continue;
 
         uint64_t temp_mac; 

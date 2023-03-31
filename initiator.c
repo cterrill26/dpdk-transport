@@ -4,8 +4,8 @@
 #include <time.h>
 #include "dpdk_transport.h"
 
-#define MSG_LEN 500
-#define NUM_MSGS 100000
+#define MSG_LEN 5000
+#define NUM_MSGS 1000
 
 
 int main(int argc, char *argv[]){
@@ -77,7 +77,7 @@ int main(int argc, char *argv[]){
     printf("Initiator Receiving\n");
     for (int i = 0; i < NUM_MSGS; i++) {
         struct msg_info info;
-        while (recv_dpdk(recv, &info) == 0)
+        while (recv_dpdk(recv, &info, NULL) == 0)
             continue;
         
         if (info.length != MSG_LEN*sizeof(int16_t))
