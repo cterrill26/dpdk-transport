@@ -4,6 +4,7 @@
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
 #include <rte_cycles.h>
+#include <string.h>
 #include "dpdk_transport.h"
 #include "dpdk_recv.h"
 #include "dpdk_common.h"
@@ -11,6 +12,10 @@
 
 #define RESEND_TIME_US 1000LL
 #define MAX_UNANSWERED_RESEND_REQUESTS 100
+#define MAX_OUTSTANDING_RECVS 2047
+#define MAX_COMPLETED_RECVS 2047
+#define RECV_RECORD_MEMPOOL_SIZE 8192-1
+#define RECV_RECORD_MEMPOOL_CACHE_SIZE 512
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint32_t msgid, uint8_t type, uint32_t data_len);
 static inline void send_completed_pkt(struct lcore_params *params, struct msg_info *info, uint32_t msgid);
@@ -179,7 +184,14 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         }
 
         // this is the first packet of a new msg
-        recv_record = rte_zmalloc("recv record", sizeof(struct msg_recv_record), 0);
+        if (unlikely(rte_mempool_get(params->recv_record_pool, &recv_record) < 0){
+            RTE_LOG_DP(DEBUG, MEMPOOL,
+                       "%s:Recv pkt loss due to failed rte_mempool_get\n", __func__);
+            rte_pktmbuf_free(pkt);
+            return;
+        }
+
+        memset(recv_record, 0, sizeof(struct msg_recv_record)); //current dpdk version does not have rte_memset
         rte_mbuf_to_msg_info(pkt, &recv_record->info);
         recv_record->time = rte_get_timer_cycles();
 
@@ -188,7 +200,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         {
             RTE_LOG_DP(DEBUG, HASH,
                        "%s:Recv pkt loss due to failed linked_hash_add_key_data\n", __func__);
-            rte_free(recv_record);
+            rte_mempool_put(params->recv_record_pool, recv_record);
             rte_pktmbuf_free(pkt);
             return;
         }
@@ -253,7 +265,7 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
             linked_hash_del_key(hashtbl, key);
             for(uint8_t pktid = 0; pktid < total_pkts; pktid++)
                 rte_pktmbuf_free(recv_record->pkts[pktid]);
-            rte_free(recv_record);
+            rte_mempool_put(params->recv_record_pool, recv_record);
             continue;
         }
 

@@ -15,8 +15,10 @@
 #define SCHED_RX_SEND_RING_SZ 65536
 #define SCHED_RX_RECV_RING_SZ 65536
 #define SCHED_SEND_RING_SZ 65536
-#define SCHED_RECV_RING_SZ 65536
+#define SCHED_RECV_RING_SZ 16384
 #define MBUF_CACHE_SIZE 128
+#define RECV_RECORD_POOL_SIZE 8192-1
+#define RECV_RECORD_CACHE_SIZE 512
 
 struct lcore_params *params;
 
@@ -64,17 +66,43 @@ int init(int argc, char *argv[])
                      portid);
     }
 
+    params->recv_record_pool = rte_mempool_create("Recv record mempool", RECV_RECORD_POOL_SIZE, sizeof(struct msg_recv_record), 
+                                            RECV_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), MEMPOOL_F_SC_GET);
+
+    if (params->recv_record_pool == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create recv_record_pool\n");
+    }
+
     /* initialize all rings */
     params->recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
                                 rte_socket_id(), RING_F_SP_ENQ);
+    if (params->recv_ring == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create recv_ring\n");
+    }
+
     params->send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
                                 rte_socket_id(), RING_F_SC_DEQ);
+    if (params->send_ring == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create send_ring\n");
+    }
+
     params->rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
                                    rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->rx_recv_ring == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create rx_recv_ring\n");
+    }
+
     params->rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
                                    rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->rx_send_ring == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create rx_send_ring\n");
+    }
+
     params->tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
                               rte_socket_id(), RING_F_SC_DEQ);
+    if (params->tx_ring == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create tx_ring\n");
+    }
 
     if (rte_lcore_count() < 5)
         rte_exit(EXIT_FAILURE, "Error, This application needs at "
@@ -141,8 +169,13 @@ int terminate(void)
             return -1;
     }
 
-    unsigned int use_count = rte_mempool_in_use_count(params->mbuf_pool);
-    printf("mbuf pool use count: %u\n", use_count);
+    rte_mempool_free(params->mbuf_pool);
+    rte_mempool_free(params->recv_record_pool);
+    rte_ring_free(params->recv_ring);
+    rte_ring_free(params->send_ring);
+    rte_ring_free(params->rx_send_ring);
+    rte_ring_free(params->rx_recv_ring);
+    rte_ring_free(params->tx_ring);
 
     rte_free(params);
 
@@ -213,7 +246,7 @@ uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available)
         rte_pktmbuf_free(pkt);
     }
 
-    rte_free(recv_record);
+    rte_mempool_put(params->recv_record_pool, recv_record);
     return length;
 }
 

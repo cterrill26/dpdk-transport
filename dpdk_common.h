@@ -26,6 +26,7 @@ struct lcore_params {
     struct rte_ring *rx_recv_ring;
     struct rte_ring *rx_send_ring;
     struct rte_mempool *mbuf_pool;
+    struct rte_mempool *recv_record_pool;
     rte_atomic16_t outstanding_sends;
     int quit_signal_tx;
     int quit_signal_rx;

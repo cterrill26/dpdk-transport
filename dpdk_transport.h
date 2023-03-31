@@ -3,8 +3,6 @@
 
 #define MAX_MSG_SIZE 100000
 #define MAX_OUTSTANDING_SENDS 2047
-#define MAX_OUTSTANDING_RECVS 2047
-#define MAX_COMPLETED_RECVS 2047
 
 #include <inttypes.h>
 
