@@ -2,6 +2,7 @@
 #define DPDK_COMMON_H
 
 #include <inttypes.h>
+#include <rte_ethdev.h>
 #include <rte_byteorder.h>
 #include <rte_atomic.h>
 #include "dpdk_transport.h"

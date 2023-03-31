@@ -209,9 +209,10 @@ uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available)
         rte_memcpy((void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
                     rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
                     pkt->pkt_len - TOTAL_HDR_SIZE);
+
+        rte_pktmbuf_free(pkt);
     }
 
-    rte_pktmbuf_free_bulk(recv_record->pkts, total_pkts);
     rte_free(recv_record);
     return length;
 }

@@ -251,7 +251,8 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
             RTE_LOG_DP(INFO, MBUF,
                        "%s:Deleted recv_record after %d unasnwered resend requests\n", __func__, MAX_UNANSWERED_RESEND_REQUESTS);
             linked_hash_del_key(hashtbl, key);
-            rte_pktmbuf_free_bulk(recv_record->pkts, total_pkts);
+            for(uint8_t pktid = 0; pktid < total_pkts; pktid++)
+                rte_pktmbuf_free(recv_record->pkts[pktid]);
             rte_free(recv_record);
             continue;
         }

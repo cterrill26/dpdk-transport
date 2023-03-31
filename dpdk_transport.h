@@ -20,7 +20,7 @@ struct msg_info
 
 int init(int argc, char *argv[]);
 int terminate(void);
-int send_dpdk(const void *buffer, const struct msginfo *info);
+int send_dpdk(const void *buffer, const struct msg_info *info);
 uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available);
 uint64_t port_to_mac(uint16_t portid);
 uint32_t string_to_ip(char *s);
