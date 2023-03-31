@@ -24,12 +24,11 @@ int main(int argc, char *argv[]){
         info.dst_ip = info.src_ip;
         info.src_ip = temp_ip;
 
-        if (send_dpdk(recv, &info) < 0)
-	        printf("Echoer failed to echo %u bytes from msg %u\n", info.length, recv[0]);
-        else
-	        printf("Echoer echoed %u bytes from msg %u\n", info.length, recv[0]);
+        while (send_dpdk(recv, &info) < 0)
+		continue;
     }
 
+    sleep(2);
     terminate();
 
     return 0;
