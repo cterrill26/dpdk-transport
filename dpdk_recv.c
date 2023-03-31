@@ -184,7 +184,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         }
 
         // this is the first packet of a new msg
-        if (unlikely(rte_mempool_get(params->recv_record_pool, &recv_record) < 0){
+        if (unlikely(rte_mempool_get(params->recv_record_pool, (void*)&recv_record) < 0)){
             RTE_LOG_DP(DEBUG, MEMPOOL,
                        "%s:Recv pkt loss due to failed rte_mempool_get\n", __func__);
             rte_pktmbuf_free(pkt);
