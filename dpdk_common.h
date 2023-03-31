@@ -40,6 +40,10 @@ struct dpdk_transport_hdr
     uint8_t type;
 } __attribute__((__packed__));
 
+#define TOTAL_HDR_SIZE (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr))
+#define MAX_PKT_MSGDATA_LEN (RTE_ETHER_MAX_LEN - TOTAL_HDR_SIZE)
+#define MAX_PKTS_IN_MSG (RTE_ALIGN_MUL_CEIL(MAX_MSG_SIZE, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN)
+
 struct msg_key
 {
     uint32_t src_ip;
@@ -56,16 +60,13 @@ struct msg_send_record
 
 struct msg_recv_record
 {
-    char *msg;
-    struct msg_info info;
-    uint64_t pkts_received_mask[2]; // mask of received pktids
+    struct rte_mbuf *pkts[MAX_PKTS_IN_MSG];
     uint64_t time;
+    struct msg_info info;
+    uint8_t pkts_received_mask[RTE_ALIGN_MUL_CEIL(MAX_PKTS_IN_MSG, 8)/8]; // mask of received pktids
     uint8_t nb_pkts_received;
     uint8_t nb_resend_requests;
 };
-
-#define TOTAL_HDR_SIZE (sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr))
-#define MAX_PKT_MSGDATA_LEN (RTE_ETHER_MAX_LEN - TOTAL_HDR_SIZE)
 
 void DumpHex(const void *data, size_t size);
 

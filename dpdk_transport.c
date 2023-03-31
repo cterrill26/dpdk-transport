@@ -141,7 +141,6 @@ int terminate(void)
             return -1;
     }
 
-
     unsigned int use_count = rte_mempool_in_use_count(params->mbuf_pool);
     printf("mbuf pool use count: %u\n", use_count);
 
@@ -185,20 +184,34 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
     return 0;
 }
 
-uint32_t recv_dpdk(void *buffer, struct msg_info *info)
+uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available)
 {
     struct msg_recv_record *recv_record;
-    if (rte_ring_dequeue(params->recv_ring, (void *)&recv_record) != 0)
+    if (rte_ring_dequeue_burst(params->recv_ring, (void *)&recv_record, 1, available) == 0)
     {
         info->length = 0;
         return 0;
     }
 
-    uint32_t length = recv_record->info.length;
-    rte_memcpy(buffer, recv_record->msg, length);
     rte_memcpy(info, &recv_record->info, sizeof(struct msg_info));
 
-    rte_free(recv_record->msg);
+    uint32_t length = recv_record->info.length;
+    uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
+    char *buf = (char *)buffer;
+
+    rte_prefetch_non_temporal((void *)recv_record->pkts[0]);
+    rte_prefetch_non_temporal((void *)recv_record->pkts[1]);
+    rte_prefetch_non_temporal((void *)recv_record->pkts[2]);
+    for(uint8_t pktid = 0; pktid < total_pkts; pktid++){
+        rte_prefetch_non_temporal((void *)recv_record->pkts[pktid + 3]);
+
+        struct rte_mbuf *pkt = recv_record->pkts[pktid];
+        rte_memcpy((void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
+                    rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
+                    pkt->pkt_len - TOTAL_HDR_SIZE);
+    }
+
+    rte_pktmbuf_free_bulk(recv_record->pkts, total_pkts);
     rte_free(recv_record);
     return length;
 }
