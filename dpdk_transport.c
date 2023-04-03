@@ -236,7 +236,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
     char template_hdr[TOTAL_HDR_SIZE];
     set_template_hdr(template_hdr, info, msgid);
 
-    char *buf = (char *)buffer;
+    const char *buf = (const char *)buffer;
     for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
     {
         struct rte_mbuf *pkt = send_record->pkts[pktid];
@@ -267,7 +267,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
 
         // copy over packet's msg data
         rte_memcpy(rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
-                   (void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
+                   (const void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
                    msgdata_len);
     }
 
