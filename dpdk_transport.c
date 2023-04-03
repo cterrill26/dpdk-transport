@@ -17,7 +17,7 @@
 #define SCHED_SEND_RING_SZ 65536
 #define SCHED_RECV_RING_SZ 16384
 #define MBUF_CACHE_SIZE 128
-#define RECV_RECORD_POOL_SIZE 8192-1
+#define RECV_RECORD_POOL_SIZE 8192 - 1
 #define RECV_RECORD_CACHE_SIZE 512
 
 struct lcore_params *params;
@@ -29,7 +29,8 @@ static const struct rte_eth_conf port_conf_default = {
 };
 
 static int port_init(uint16_t portid);
-
+static inline void set_template_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid);
+static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
 int init(int argc, char *argv[])
 {
@@ -48,12 +49,13 @@ int init(int argc, char *argv[])
 
     /* Creates a new mempool in memory to hold the mbufs. */
     params->mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
-                                        MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 
     if (params->mbuf_pool == NULL)
         rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
     rte_atomic16_init(&params->outstanding_sends);
+    rte_atomic32_init(&params->next_msgid);
 
     /* initialize all ports */
     uint16_t portid;
@@ -66,41 +68,47 @@ int init(int argc, char *argv[])
                      portid);
     }
 
-    params->recv_record_pool = rte_mempool_create("Recv record mempool", RECV_RECORD_POOL_SIZE, sizeof(struct msg_recv_record), 
-                                            RECV_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), MEMPOOL_F_SC_GET);
+    params->recv_record_pool = rte_mempool_create("Recv record mempool", RECV_RECORD_POOL_SIZE, sizeof(struct msg_recv_record),
+                                                  RECV_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), MEMPOOL_F_SC_GET);
 
-    if (params->recv_record_pool == NULL){
+    if (params->recv_record_pool == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create recv_record_pool\n");
     }
 
     /* initialize all rings */
     params->recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
-                                rte_socket_id(), RING_F_SP_ENQ);
-    if (params->recv_ring == NULL){
+                                        rte_socket_id(), RING_F_SP_ENQ);
+    if (params->recv_ring == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create recv_ring\n");
     }
 
     params->send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
-                                rte_socket_id(), RING_F_SC_DEQ);
-    if (params->send_ring == NULL){
+                                        rte_socket_id(), RING_F_SC_DEQ);
+    if (params->send_ring == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create send_ring\n");
     }
 
     params->rx_recv_ring = rte_ring_create("Rx_recv_ring", SCHED_RX_RECV_RING_SZ,
-                                   rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    if (params->rx_recv_ring == NULL){
+                                           rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->rx_recv_ring == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create rx_recv_ring\n");
     }
 
     params->rx_send_ring = rte_ring_create("Rx_send_ring", SCHED_RX_SEND_RING_SZ,
-                                   rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
-    if (params->rx_send_ring == NULL){
+                                           rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->rx_send_ring == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create rx_send_ring\n");
     }
 
     params->tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
-                              rte_socket_id(), RING_F_SC_DEQ);
-    if (params->tx_ring == NULL){
+                                      rte_socket_id(), RING_F_SC_DEQ);
+    if (params->tx_ring == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create tx_ring\n");
     }
 
@@ -188,28 +196,81 @@ int terminate(void)
 int send_dpdk(const void *buffer, const struct msg_info *info)
 {
     uint32_t length = info->length;
-    if (length > MAX_MSG_SIZE)
+    if (unlikely(length > MAX_MSG_SIZE))
         return -1;
-    
-    while (1){
-        //atomically increment outstanding sends, ensuring it does not exceed the max amount
+
+    while (1)
+    {
+        // atomically increment outstanding sends, ensuring it does not exceed the max amount
         int16_t sends = rte_atomic16_read(&params->outstanding_sends);
-        if (sends >= MAX_OUTSTANDING_SENDS)
+        if (unlikely(sends >= MAX_OUTSTANDING_SENDS))
             return -1;
 
-        if (rte_atomic16_cmpset((volatile uint16_t *) &params->outstanding_sends.cnt, sends, sends + 1) != 0)
+        if (likely(rte_atomic16_cmpset((volatile uint16_t *)&params->outstanding_sends.cnt, sends, sends + 1) != 0))
             break;
     }
 
-    struct msg_send_record *send_record = rte_malloc("msg_send_record", sizeof(struct msg_send_record), 0);
-    send_record->msg = rte_malloc("msg_send_record_msg", length, 0);
-
+    struct msg_send_record *send_record = rte_zmalloc("msg_send_record", sizeof(struct msg_send_record), 0);
     rte_memcpy(&send_record->info, info, sizeof(struct msg_info));
-    rte_memcpy(send_record->msg, buffer, length);
 
-    if (rte_ring_enqueue(params->send_ring, send_record) != 0)
+    uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(info->length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
+
+    if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, send_record->pkts, total_pkts) < 0))
     {
-        rte_free(send_record->msg);
+        rte_atomic16_dec(&params->outstanding_sends);
+        rte_free(send_record);
+        return -1;
+    }
+
+    uint32_t msgid = (uint32_t)(rte_atomic32_add_return(&params->next_msgid, 1));
+    send_record->msgid = msgid;
+
+    // set pkt headers and copy over msg contents
+    char template_hdr[TOTAL_HDR_SIZE];
+    set_template_hdr(template_hdr, info, msgid);
+
+    char *buf = (char *)buffer;
+    for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
+    {
+        struct rte_mbuf *pkt = send_record->pkts[pktid];
+        uint16_t msgdata_len = RTE_MIN(MAX_PKT_MSGDATA_LEN, info->length - pktid * ((uint32_t)MAX_PKT_MSGDATA_LEN));
+
+        pkt->data_len = TOTAL_HDR_SIZE + msgdata_len;
+        pkt->pkt_len = TOTAL_HDR_SIZE + msgdata_len;
+        pkt->port = info->portid;
+
+        // copy over template header
+        rte_memcpy(rte_pktmbuf_mtod(pkt, void *),
+                   (void *)template_hdr,
+                   TOTAL_HDR_SIZE);
+
+        // edit ipv4 packet length and recompute checksum if necessary
+        if (unlikely(msgdata_len != MAX_PKT_MSGDATA_LEN)) // optimized for longer messages
+        {
+            struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
+                                                                  sizeof(struct rte_ether_hdr));
+            ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + msgdata_len);
+            set_ipv4_cksum(ip_hdr);
+        }
+
+        // set dpdk transport header pktid
+        struct dpdk_transport_hdr *dpdk_hdr = rte_pktmbuf_mtod_offset(pkt, struct dpdk_transport_hdr *,
+                                                                      sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+        dpdk_hdr->pktid = pktid;
+
+        // copy over packet's msg data
+        rte_memcpy(rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
+                   (void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
+                   msgdata_len);
+    }
+
+    if (unlikely(rte_ring_enqueue(params->send_ring, send_record) != 0))
+    {
+        rte_atomic16_dec(&params->outstanding_sends);
+        for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
+        {
+            rte_pktmbuf_free(send_record->pkts[pktid]);
+        }
         rte_free(send_record);
         return -1;
     }
@@ -235,13 +296,14 @@ uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available)
     rte_prefetch_non_temporal((void *)recv_record->pkts[0]);
     rte_prefetch_non_temporal((void *)recv_record->pkts[1]);
     rte_prefetch_non_temporal((void *)recv_record->pkts[2]);
-    for(uint8_t pktid = 0; pktid < total_pkts; pktid++){
+    for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
+    {
         rte_prefetch_non_temporal((void *)recv_record->pkts[pktid + 3]);
 
         struct rte_mbuf *pkt = recv_record->pkts[pktid];
         rte_memcpy((void *)&(buf[pktid * MAX_PKT_MSGDATA_LEN]),
-                    rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
-                    pkt->pkt_len - TOTAL_HDR_SIZE);
+                   rte_pktmbuf_mtod_offset(pkt, void *, TOTAL_HDR_SIZE),
+                   pkt->pkt_len - TOTAL_HDR_SIZE);
 
         rte_pktmbuf_free(pkt);
     }
@@ -330,7 +392,6 @@ static int port_init(uint16_t portid)
     return 0;
 }
 
-
 // get the uint64_t MAC address for a given portid
 uint64_t port_to_mac(uint16_t portid)
 {
@@ -387,4 +448,71 @@ uint64_t string_to_mac(char *s)
            (uint64_t)(a[3]) << 16 |
            (uint64_t)(a[4]) << 8 |
            (uint64_t)(a[5]);
+}
+
+static inline void set_template_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid)
+{
+    struct rte_ether_hdr *eth_hdr;
+    struct rte_ipv4_hdr *ip_hdr;
+    struct dpdk_transport_hdr *dpdk_hdr;
+
+    eth_hdr = (struct rte_ether_hdr *)&template_hdr[0];
+    ip_hdr = (struct rte_ipv4_hdr *)&template_hdr[sizeof(struct rte_ether_hdr)];
+    dpdk_hdr = (struct dpdk_transport_hdr *)&template_hdr[sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)];
+
+    // Initialize DPDK Transport header.
+    dpdk_hdr->msgid = rte_cpu_to_be_32(msgid);
+    dpdk_hdr->msg_len = rte_cpu_to_be_32(info->length);
+    dpdk_hdr->pktid = 0; // placeholder
+    dpdk_hdr->type = DPDK_TRANSPORT_MSGDATA;
+
+    // Initialize IP header.
+    ip_hdr->version_ihl = IP_VHL_DEF;
+    ip_hdr->type_of_service = 0;
+    ip_hdr->fragment_offset = 0;
+    ip_hdr->time_to_live = IP_DEFTTL;
+    ip_hdr->next_proto_id = IPPROTO_DPDK_TRANSPORT;
+    ip_hdr->packet_id = 0;
+    ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) + sizeof(struct dpdk_transport_hdr) + MAX_PKT_MSGDATA_LEN);
+    ip_hdr->src_addr = rte_cpu_to_be_32(info->src_ip);
+    ip_hdr->dst_addr = rte_cpu_to_be_32(info->dst_ip);
+
+    set_ipv4_cksum(ip_hdr);
+
+    // Set ethernet header.
+    union
+    {
+        uint64_t as_int;
+        struct rte_ether_addr as_addr;
+    } mac_addr;
+    mac_addr.as_int = rte_cpu_to_be_64(info->src_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->s_addr);
+    mac_addr.as_int = rte_cpu_to_be_64(info->dst_mac);
+    rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->d_addr);
+    eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+}
+
+static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
+{
+    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
+    uint32_t ip_cksum = 0;
+    ip_cksum += ptr16[0];
+    ip_cksum += ptr16[1];
+    ip_cksum += ptr16[2];
+    ip_cksum += ptr16[3];
+    ip_cksum += ptr16[4];
+    ip_cksum += ptr16[6];
+    ip_cksum += ptr16[7];
+    ip_cksum += ptr16[8];
+    ip_cksum += ptr16[9];
+
+    // Reduce 32 bit checksum to 16 bits and complement it.
+    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
+               (ip_cksum & 0x0000FFFF);
+    if (ip_cksum > 65535)
+        ip_cksum -= 65535;
+    ip_cksum = (~ip_cksum) & 0x0000FFFF;
+    if (ip_cksum == 0)
+        ip_cksum = 0xFFFF;
+    hdr->hdr_checksum = (uint16_t)ip_cksum;
 }

@@ -28,6 +28,7 @@ struct lcore_params {
     struct rte_mempool *mbuf_pool;
     struct rte_mempool *recv_record_pool;
     rte_atomic16_t outstanding_sends;
+    rte_atomic32_t next_msgid;
     int quit_signal_tx;
     int quit_signal_rx;
     int quit_signal_send;
@@ -55,9 +56,10 @@ struct msg_key
 
 struct msg_send_record
 {
-    char *msg;
-    struct msg_info info;
+    struct rte_mbuf *pkts[MAX_PKTS_IN_MSG];
     uint64_t time;
+    struct msg_info info;
+    uint32_t msgid;
 };
 
 struct msg_recv_record
