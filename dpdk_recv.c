@@ -12,18 +12,25 @@
 
 #define RESEND_TIME_US 1000LL
 #define MAX_UNANSWERED_RESEND_REQUESTS 100
-#define MAX_OUTSTANDING_RECVS 2047
+#define MAX_ACTIVE_RECVS 2047
 #define MAX_COMPLETED_RECVS 2047
-#define RECV_RECORD_MEMPOOL_SIZE 8192-1
-#define RECV_RECORD_MEMPOOL_CACHE_SIZE 512
+#define NB_CTRL_MBUFS ((2 * 1024) - 1)
+#define MBUF_CACHE_SIZE 128
+
+struct recv_objs
+{
+    struct linked_hash *active_recvs_tbl;
+    struct linked_hash *completed_recvs_tbl;
+    struct rte_mempool *ctrl_mbuf_pool;
+    struct lcore_params *params;
+};
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint32_t msgid, uint8_t type, uint32_t data_len);
-static inline void send_completed_pkt(struct lcore_params *params, struct msg_info *info, uint32_t msgid);
-static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct linked_hash *hashtbl, struct linked_hash *completed, struct msg_key *key, int32_t pos);
+static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *info, uint32_t msgid);
+static inline void recv_msg(struct recv_objs *objs, struct msg_recv_record *recv_record, struct msg_key *key, int32_t pos);
 static inline void rte_mbuf_to_msg_info(struct rte_mbuf *pkt, struct msg_info *info);
-static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl, struct linked_hash *completed);
-static inline void request_resends(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t resend_before);
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
+static inline void recv_pkt(struct recv_objs *objs, struct rte_mbuf *pkt);
+static inline void request_resends(struct recv_objs *objs, uint64_t resend_before);
 
 static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint32_t msgid, uint8_t type, uint32_t data_len)
 {
@@ -68,9 +75,9 @@ static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint
     eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 }
 
-static inline void send_completed_pkt(struct lcore_params *params, struct msg_info *info, uint32_t msgid)
+static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *info, uint32_t msgid)
 {
-    struct rte_mbuf *pkt = rte_pktmbuf_alloc(params->mbuf_pool);
+    struct rte_mbuf *pkt = rte_pktmbuf_alloc(objs->ctrl_mbuf_pool);
     if (unlikely(pkt == NULL))
     {
         RTE_LOG_DP(INFO, MBUF,
@@ -82,7 +89,7 @@ static inline void send_completed_pkt(struct lcore_params *params, struct msg_in
         pkt->pkt_len = TOTAL_HDR_SIZE;
         pkt->port = info->portid;
         set_headers(pkt, info, msgid, DPDK_TRANSPORT_COMPLETE, 0);
-        if (rte_ring_enqueue(params->tx_ring, (void *)pkt) != 0)
+        if (rte_ring_enqueue(objs->params->tx_ring, (void *)pkt) != 0)
         {
             RTE_LOG_DP(INFO, RING,
                        "%s:Completed pkt loss due to full tx_ring\n", __func__);
@@ -91,16 +98,16 @@ static inline void send_completed_pkt(struct lcore_params *params, struct msg_in
     }
 }
 
-static inline void recv_msg(struct lcore_params *params, struct msg_recv_record *recv_record, struct linked_hash *hashtbl, struct linked_hash *completed, struct msg_key *key, int32_t pos)
+static inline void recv_msg(struct recv_objs *objs, struct msg_recv_record *recv_record, struct msg_key *key, int32_t pos)
 {
-    send_completed_pkt(params, &recv_record->info, key->msgid);
+    send_completed_pkt(objs, &recv_record->info, key->msgid);
 
-    if (linked_hash_add_key_data(completed, key, NULL) < 0)
+    if (linked_hash_add_key_data(objs->completed_recvs_tbl, key, NULL) < 0)
     {
         // completed table is full, remove oldest element
         void *k, *d;
-        linked_hash_del_pos(completed, linked_hash_front(completed, &k, &d));
-        if (unlikely(linked_hash_add_key_data(completed, key, NULL) < 0))
+        linked_hash_del_pos(objs->completed_recvs_tbl, linked_hash_front(objs->completed_recvs_tbl, &k, &d));
+        if (unlikely(linked_hash_add_key_data(objs->completed_recvs_tbl, key, NULL) < 0))
         {
             RTE_LOG_DP(ERR, HASH,
                        "%s:Failed to add msg to completed table\n", __func__);
@@ -108,15 +115,15 @@ static inline void recv_msg(struct lcore_params *params, struct msg_recv_record 
     }
 
     // pass full msg on to recv_ring
-    if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
+    if (likely(rte_ring_enqueue(objs->params->recv_ring, recv_record) == 0))
     {
-        linked_hash_del_key(hashtbl, key);
+        linked_hash_del_key(objs->active_recvs_tbl, key);
     }
     else
     {
         // in the case the enqueue fails, the entry will remain in the hashtbl, and the resend_request function
         // will attempt to enqueue the recv_record later on
-        linked_hash_move_pos_to_front(hashtbl, pos);
+        linked_hash_move_pos_to_front(objs->active_recvs_tbl, pos);
     }
 }
 
@@ -148,7 +155,7 @@ static inline void rte_mbuf_to_msg_info(struct rte_mbuf *pkt, struct msg_info *i
     info->length = rte_be_to_cpu_32(dpdk_hdr->msg_len);
 }
 
-static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl, struct linked_hash *completed)
+static inline void recv_pkt(struct recv_objs *objs, struct rte_mbuf *pkt)
 {
     struct rte_ipv4_hdr *ip_hdr;
     struct dpdk_transport_hdr *dpdk_hdr;
@@ -163,11 +170,11 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
 
     struct msg_recv_record *recv_record;
-    int32_t pos = linked_hash_lookup_data(hashtbl, &key, (void *)&recv_record);
+    int32_t pos = linked_hash_lookup_data(objs->active_recvs_tbl, &key, (void *)&recv_record);
     if (pos < 0)
     {
         void *d;
-        if (unlikely(linked_hash_lookup_data(completed, &key, &d) >= 0))
+        if (unlikely(linked_hash_lookup_data(objs->completed_recvs_tbl, &key, &d) >= 0))
         {
             // this is a pkt from a completed message
             uint8_t pktid = dpdk_hdr->pktid;
@@ -176,7 +183,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
                 // msg probe, sender never received completed pkt
                 struct msg_info info;
                 rte_mbuf_to_msg_info(pkt, &info);
-                send_completed_pkt(params, &info, key.msgid);
+                send_completed_pkt(objs, &info, key.msgid);
             }
 
             rte_pktmbuf_free(pkt);
@@ -184,7 +191,7 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         }
 
         // this is the first packet of a new msg
-        if (unlikely(rte_mempool_get(params->recv_record_pool, (void*)&recv_record) < 0)){
+        if (unlikely(rte_mempool_get(objs->params->recv_record_pool, (void*)&recv_record) < 0)){
             RTE_LOG_DP(DEBUG, MEMPOOL,
                        "%s:Recv pkt loss due to failed rte_mempool_get\n", __func__);
             rte_pktmbuf_free(pkt);
@@ -195,12 +202,12 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
         rte_mbuf_to_msg_info(pkt, &recv_record->info);
         recv_record->time = rte_get_timer_cycles();
 
-        pos = linked_hash_add_key_data(hashtbl, (void *)&key, (void *)recv_record);
+        pos = linked_hash_add_key_data(objs->active_recvs_tbl, (void *)&key, (void *)recv_record);
         if (unlikely(pos < 0))
         {
             RTE_LOG_DP(DEBUG, HASH,
                        "%s:Recv pkt loss due to failed linked_hash_add_key_data\n", __func__);
-            rte_mempool_put(params->recv_record_pool, recv_record);
+            rte_mempool_put(objs->params->recv_record_pool, recv_record);
             rte_pktmbuf_free(pkt);
             return;
         }
@@ -222,12 +229,12 @@ static inline void recv_pkt(struct lcore_params *params, struct rte_mbuf *pkt, s
 
     uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(recv_record->info.length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
     if (recv_record->nb_pkts_received == total_pkts)
-        recv_msg(params, recv_record, hashtbl, completed, &key, pos);
+        recv_msg(objs, recv_record, &key, pos);
     else
-        linked_hash_move_pos_to_back(hashtbl, pos);
+        linked_hash_move_pos_to_back(objs->active_recvs_tbl, pos);
 }
 
-static inline void request_resends(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t resend_before)
+static inline void request_resends(struct recv_objs *objs, uint64_t resend_before)
 {
     struct msg_key *key;
     struct msg_recv_record *recv_record;
@@ -237,7 +244,7 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
     struct rte_mbuf *pkts[BURST_SIZE_TX];
     while (1)
     {
-        int32_t pos = linked_hash_iterate(hashtbl, (void *)&key, (void *)&recv_record, &next);
+        int32_t pos = linked_hash_iterate(objs->active_recvs_tbl, (void *)&key, (void *)&recv_record, &next);
         if (unlikely(pos < 0))
             break;
 
@@ -248,8 +255,8 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
         if (unlikely(nb_pkts_missing == 0))
         {
             // recv_record must have failed to be enqueud in recv_ring earlier, try again
-            if (likely(rte_ring_enqueue(params->recv_ring, recv_record) == 0))
-                linked_hash_del_key(hashtbl, key);
+            if (likely(rte_ring_enqueue(objs->params->recv_ring, recv_record) == 0))
+                linked_hash_del_key(objs->active_recvs_tbl, key);
 
             continue;
         }
@@ -262,16 +269,16 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
         {
             RTE_LOG_DP(INFO, MBUF,
                        "%s:Deleted recv_record after %d unasnwered resend requests\n", __func__, MAX_UNANSWERED_RESEND_REQUESTS);
-            linked_hash_del_key(hashtbl, key);
+            linked_hash_del_key(objs->active_recvs_tbl, key);
             for(uint8_t pktid = 0; pktid < total_pkts; pktid++)
                 rte_pktmbuf_free(recv_record->pkts[pktid]);
-            rte_mempool_put(params->recv_record_pool, recv_record);
+            rte_mempool_put(objs->params->recv_record_pool, recv_record);
             continue;
         }
 
         if (nb_to_send == 0)
         {
-            if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, pkts, BURST_SIZE_TX) < 0))
+            if (unlikely(rte_pktmbuf_alloc_bulk(objs->ctrl_mbuf_pool, pkts, BURST_SIZE_TX) < 0))
             {
                 RTE_LOG_DP(INFO, MBUF,
                            "%s:Resend request pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
@@ -301,13 +308,13 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
 
         recv_record->time = rte_get_timer_cycles();
         recv_record->nb_resend_requests++;
-        linked_hash_move_pos_to_back(hashtbl, pos);
+        linked_hash_move_pos_to_back(objs->active_recvs_tbl, pos);
         nb_to_send++;
 
         if (nb_to_send == BURST_SIZE_TX)
         {
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
@@ -323,7 +330,7 @@ static inline void request_resends(struct lcore_params *params, struct linked_ha
     if (nb_to_send > 0)
     {
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
@@ -342,34 +349,41 @@ int lcore_recv(struct lcore_params *params)
 {
     printf("\nCore %u doing recv task.\n", rte_lcore_id());
 
-    struct linked_hash *hashtbl = NULL;
-    struct rte_hash_parameters hash_params = {
-        .name = "recv_table",
-        .entries = MAX_OUTSTANDING_RECVS,
+    struct recv_objs objs;
+    objs.params = params;
+
+    struct rte_hash_parameters active_recvs_params = {
+        .name = "active_recvs_tbl",
+        .entries = MAX_ACTIVE_RECVS,
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
         .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE};
 
-    hashtbl = linked_hash_create(&hash_params);
-    if (hashtbl == NULL)
+    objs.active_recvs_tbl = linked_hash_create(&active_recvs_params);
+    if (objs.active_recvs_tbl == NULL)
     {
-        rte_exit(EXIT_FAILURE, "Error: failed to create recv linked hash\n");
+        rte_exit(EXIT_FAILURE, "Error: failed to create active recvs linked hash\n");
     }
 
-    struct linked_hash *completed = NULL;
-    struct rte_hash_parameters completed_params = {
-        .name = "completed_table",
+    struct rte_hash_parameters completed_recvs_params = {
+        .name = "completed_recvs_tbl",
         .entries = MAX_COMPLETED_RECVS,
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
         .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE};
 
-    completed = linked_hash_create(&completed_params);
-    if (completed == NULL)
+    objs.completed_recvs_tbl = linked_hash_create(&completed_recvs_params);
+    if (objs.completed_recvs_tbl == NULL)
     {
-        rte_exit(EXIT_FAILURE, "Error: failed to create completed linked hash\n");
+        rte_exit(EXIT_FAILURE, "Error: failed to create completed recvs linked hash\n");
+    }
+
+    objs.ctrl_mbuf_pool = rte_pktmbuf_pool_create("CTRL_MBUF_POOL", NB_CTRL_MBUFS,
+                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if(objs.ctrl_mbuf_pool == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create ctrl mbuf pool\n");
     }
 
     uint64_t prev_resend_request = rte_get_timer_cycles();
@@ -390,7 +404,7 @@ int lcore_recv(struct lcore_params *params)
             for (unsigned int i = 0; i < nb_rx; i++)
             {
                 rte_prefetch_non_temporal((void *)pkts[i + 3]);
-                recv_pkt(params, pkts[i], hashtbl, completed);
+                recv_pkt(&objs, pkts[i]);
             }
         }
 
@@ -403,43 +417,22 @@ int lcore_recv(struct lcore_params *params)
         {
             // send resend requests for missing packets
             prev_resend_request = now;
-            request_resends(params, hashtbl, now - resend_cycles);
+            request_resends(&objs, now - resend_cycles);
         }
     }
 
     RTE_LOG(INFO, HASH,
-            "%s:Number of elements in recv linked hash: %u\n", __func__, linked_hash_count(hashtbl));
-    linked_hash_free(hashtbl);
+            "%s:Number of elements in active recvs linked hash: %u\n", __func__, linked_hash_count(objs.active_recvs_tbl));
+    linked_hash_free(objs.active_recvs_tbl);
 
     RTE_LOG(INFO, HASH,
-            "%s:Number of elements in completed linked hash: %u\n", __func__, linked_hash_count(completed));
-    linked_hash_free(completed);
+            "%s:Number of elements in completed recvs linked hash: %u\n", __func__, linked_hash_count(objs.completed_recvs_tbl));
+    linked_hash_free(objs.completed_recvs_tbl);
+
+    RTE_LOG(INFO, MEMPOOL,
+            "%s:Number of elements in ctrl mbuf pool: %u\n", __func__, rte_mempool_in_use_count(objs.ctrl_mbuf_pool));
+    rte_mempool_free(objs.ctrl_mbuf_pool);
 
     printf("\nCore %u exiting recv task.\n", rte_lcore_id());
     return 0;
-}
-
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
-{
-    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
-    uint32_t ip_cksum = 0;
-    ip_cksum += ptr16[0];
-    ip_cksum += ptr16[1];
-    ip_cksum += ptr16[2];
-    ip_cksum += ptr16[3];
-    ip_cksum += ptr16[4];
-    ip_cksum += ptr16[6];
-    ip_cksum += ptr16[7];
-    ip_cksum += ptr16[8];
-    ip_cksum += ptr16[9];
-
-    // Reduce 32 bit checksum to 16 bits and complement it.
-    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
-               (ip_cksum & 0x0000FFFF);
-    if (ip_cksum > 65535)
-        ip_cksum -= 65535;
-    ip_cksum = (~ip_cksum) & 0x0000FFFF;
-    if (ip_cksum == 0)
-        ip_cksum = 0xFFFF;
-    hdr->hdr_checksum = (uint16_t)ip_cksum;
 }

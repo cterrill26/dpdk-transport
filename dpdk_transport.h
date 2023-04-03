@@ -2,7 +2,6 @@
 #define DPDK_TRANSPORT_H
 
 #define MAX_MSG_SIZE 100000
-#define MAX_OUTSTANDING_SENDS 2047
 
 #include <inttypes.h>
 

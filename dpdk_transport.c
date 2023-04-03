@@ -10,7 +10,8 @@
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
-#define NUM_MBUFS ((64 * 1024) - 1)
+#define NB_SEND_MBUFS ((64 * 1024) - 1)
+#define NB_RECV_MBUFS ((64 * 1024) - 1)
 #define SCHED_TX_RING_SZ 65536
 #define SCHED_RX_SEND_RING_SZ 65536
 #define SCHED_RX_RECV_RING_SZ 65536
@@ -18,7 +19,7 @@
 #define SCHED_RECV_RING_SZ 16384
 #define MBUF_CACHE_SIZE 128
 #define RECV_RECORD_POOL_SIZE 8192 - 1
-#define RECV_RECORD_CACHE_SIZE 512
+#define RECV_RECORD_CACHE_SIZE 128
 
 struct lcore_params *params;
 
@@ -30,7 +31,6 @@ static const struct rte_eth_conf port_conf_default = {
 
 static int port_init(uint16_t portid);
 static inline void set_template_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid);
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
 
 int init(int argc, char *argv[])
 {
@@ -47,12 +47,18 @@ int init(int argc, char *argv[])
 
     params = rte_zmalloc("params", sizeof(struct lcore_params), 0);
 
-    /* Creates a new mempool in memory to hold the mbufs. */
-    params->mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
-                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 
-    if (params->mbuf_pool == NULL)
-        rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+    /* Create mempools in memory to hold the mbufs. */
+    params->send_mbuf_pool = rte_pktmbuf_pool_create("SEND_MBUF_POOL", NB_SEND_MBUFS * nb_ports,
+                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (params->send_mbuf_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create send mbuf pool\n");
+
+    params->recv_mbuf_pool = rte_pktmbuf_pool_create("RECV_MBUF_POOL", NB_RECV_MBUFS * nb_ports,
+                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (params->recv_mbuf_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create recv mbuf pool\n");
+
 
     rte_atomic16_init(&params->outstanding_sends);
     rte_atomic32_init(&params->next_msgid);
@@ -177,7 +183,8 @@ int terminate(void)
             return -1;
     }
 
-    rte_mempool_free(params->mbuf_pool);
+    rte_mempool_free(params->send_mbuf_pool);
+    rte_mempool_free(params->recv_mbuf_pool);
     rte_mempool_free(params->recv_record_pool);
     rte_ring_free(params->recv_ring);
     rte_ring_free(params->send_ring);
@@ -203,7 +210,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
     {
         // atomically increment outstanding sends, ensuring it does not exceed the max amount
         int16_t sends = rte_atomic16_read(&params->outstanding_sends);
-        if (unlikely(sends >= MAX_OUTSTANDING_SENDS))
+        if (unlikely(sends >= MAX_ACTIVE_SENDS))
             return -1;
 
         if (likely(rte_atomic16_cmpset((volatile uint16_t *)&params->outstanding_sends.cnt, sends, sends + 1) != 0))
@@ -215,7 +222,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
 
     uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(info->length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
 
-    if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, send_record->pkts, total_pkts) < 0))
+    if (unlikely(rte_pktmbuf_alloc_bulk(params->send_mbuf_pool, send_record->pkts, total_pkts) < 0))
     {
         rte_atomic16_dec(&params->outstanding_sends);
         rte_free(send_record);
@@ -355,7 +362,7 @@ static int port_init(uint16_t portid)
     for (q = 0; q < rx_rings; q++)
     {
         retval = rte_eth_rx_queue_setup(portid, q, nb_rxd,
-                                        rte_eth_dev_socket_id(portid), NULL, params->mbuf_pool);
+                                        rte_eth_dev_socket_id(portid), NULL, params->recv_mbuf_pool);
         if (retval < 0)
             return retval;
     }
@@ -490,29 +497,4 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_info *i
     mac_addr.as_int = rte_cpu_to_be_64(info->dst_mac);
     rte_ether_addr_copy(&mac_addr.as_addr, &eth_hdr->d_addr);
     eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-}
-
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
-{
-    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
-    uint32_t ip_cksum = 0;
-    ip_cksum += ptr16[0];
-    ip_cksum += ptr16[1];
-    ip_cksum += ptr16[2];
-    ip_cksum += ptr16[3];
-    ip_cksum += ptr16[4];
-    ip_cksum += ptr16[6];
-    ip_cksum += ptr16[7];
-    ip_cksum += ptr16[8];
-    ip_cksum += ptr16[9];
-
-    // Reduce 32 bit checksum to 16 bits and complement it.
-    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
-               (ip_cksum & 0x0000FFFF);
-    if (ip_cksum > 65535)
-        ip_cksum -= 65535;
-    ip_cksum = (~ip_cksum) & 0x0000FFFF;
-    if (ip_cksum == 0)
-        ip_cksum = 0xFFFF;
-    hdr->hdr_checksum = (uint16_t)ip_cksum;
 }

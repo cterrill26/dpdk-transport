@@ -19,13 +19,16 @@
 #define DPDK_TRANSPORT_COMPLETE 1
 #define DPDK_TRANSPORT_RESEND 2
 
+#define MAX_ACTIVE_SENDS 2047
+
 struct lcore_params {
     struct rte_ring *recv_ring;
     struct rte_ring *send_ring;
     struct rte_ring *tx_ring;
     struct rte_ring *rx_recv_ring;
     struct rte_ring *rx_send_ring;
-    struct rte_mempool *mbuf_pool;
+    struct rte_mempool *send_mbuf_pool;
+    struct rte_mempool *recv_mbuf_pool;
     struct rte_mempool *recv_record_pool;
     rte_atomic16_t outstanding_sends;
     rte_atomic32_t next_msgid;
@@ -73,5 +76,30 @@ struct msg_recv_record
 };
 
 void DumpHex(const void *data, size_t size);
+
+static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
+{
+    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
+    uint32_t ip_cksum = 0;
+    ip_cksum += ptr16[0];
+    ip_cksum += ptr16[1];
+    ip_cksum += ptr16[2];
+    ip_cksum += ptr16[3];
+    ip_cksum += ptr16[4];
+    ip_cksum += ptr16[6];
+    ip_cksum += ptr16[7];
+    ip_cksum += ptr16[8];
+    ip_cksum += ptr16[9];
+
+    // Reduce 32 bit checksum to 16 bits and complement it.
+    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
+               (ip_cksum & 0x0000FFFF);
+    if (ip_cksum > 65535)
+        ip_cksum -= 65535;
+    ip_cksum = (~ip_cksum) & 0x0000FFFF;
+    if (ip_cksum == 0)
+        ip_cksum = 0xFFFF;
+    hdr->hdr_checksum = (uint16_t)ip_cksum;
+}
 
 #endif /* DPDK_COMMON_H */

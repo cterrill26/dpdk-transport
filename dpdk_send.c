@@ -9,12 +9,20 @@
 #include "linked_hash.h"
 
 #define PROBE_TIME_US 50000LL
+#define NB_PROBE_MBUFS ((1 * 1024) - 1)
+#define MBUF_CACHE_SIZE 128
+
+struct send_objs
+{
+    struct linked_hash *active_sends_tbl;
+    struct rte_mempool *probe_mbuf_pool;
+    struct lcore_params *params;
+};
 
 static inline void set_probe_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid);
-static inline void send_msg(struct lcore_params *params, struct msg_send_record *send_record, struct linked_hash *hashtbl);
-static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl);
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr);
-static inline void send_probes(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t probe_before);
+static inline void send_msg(struct send_objs *objs, struct msg_send_record *send_record);
+static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt);
+static inline void send_probes(struct send_objs *objs, uint64_t probe_before);
 
 static inline void set_probe_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid)
 {
@@ -58,7 +66,7 @@ static inline void set_probe_hdr(char *template_hdr, const struct msg_info *info
     eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 }
 
-static inline void send_msg(struct lcore_params *params, struct msg_send_record *send_record, struct linked_hash *hashtbl)
+static inline void send_msg(struct send_objs *objs, struct msg_send_record *send_record)
 {
     send_record->time = rte_get_timer_cycles();
     struct msg_info *info = &send_record->info;
@@ -66,7 +74,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_send_record 
     uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(info->length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
 
     // store send_record in hash table
-    if (unlikely(linked_hash_add_key_data(hashtbl, (void *)&key, (void *)send_record) < 0))
+    if (unlikely(linked_hash_add_key_data(objs->active_sends_tbl, (void *)&key, (void *)send_record) < 0))
     {
         // this should never happen since the outstanding_sends field of params prevents the
         // user from sending too many messages
@@ -89,7 +97,7 @@ static inline void send_msg(struct lcore_params *params, struct msg_send_record 
 
         // enqueue packet buffers to tx_ring
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                         (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
@@ -101,7 +109,8 @@ static inline void send_msg(struct lcore_params *params, struct msg_send_record 
     }
 }
 
-static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *pkt, struct linked_hash *hashtbl){
+static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
+{
     struct msg_key key;
     struct rte_ipv4_hdr *ip_hdr;
     struct dpdk_transport_hdr *dpdk_hdr;
@@ -114,7 +123,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
     key.dst_ip = rte_be_to_cpu_32(ip_hdr->src_addr);
     key.msgid = rte_be_to_cpu_32(dpdk_hdr->msgid);
     struct msg_send_record *send_record;
-    int32_t pos = linked_hash_lookup_data(hashtbl, &key, (void *)&send_record);
+    int32_t pos = linked_hash_lookup_data(objs->active_sends_tbl, &key, (void *)&send_record);
     if (unlikely(pos < 0))
     {
         rte_pktmbuf_free(pkt);
@@ -128,12 +137,12 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
             rte_pktmbuf_free(send_record->pkts[pktid]);
 
         rte_free(send_record);
-        linked_hash_del_key(hashtbl, &key); 
-        rte_atomic16_dec(&params->outstanding_sends);
+        linked_hash_del_key(objs->active_sends_tbl, &key); 
+        rte_atomic16_dec(&objs->params->outstanding_sends);
     }
     else if (dpdk_hdr->type == DPDK_TRANSPORT_RESEND){
         send_record->time = rte_get_timer_cycles();
-        linked_hash_move_pos_to_back(hashtbl, pos);
+        linked_hash_move_pos_to_back(objs->active_sends_tbl, pos);
         uint8_t nb_resends = (uint8_t) rte_be_to_cpu_32(dpdk_hdr->msg_len);
         struct rte_mbuf *pkts[BURST_SIZE_TX];
         uint8_t *pktids = rte_pktmbuf_mtod_offset(pkt, uint8_t *, TOTAL_HDR_SIZE);
@@ -151,7 +160,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
 
             // enqueue packet buffers to tx_ring
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                           (void *)pkts, nb_to_send, NULL);
             if (unlikely(sent < nb_to_send))
             {
@@ -165,7 +174,7 @@ static inline void recv_ctrl_pkt(struct lcore_params *params, struct rte_mbuf *p
     rte_pktmbuf_free(pkt);
 }
 
-static inline void send_probes(struct lcore_params *params, struct linked_hash *hashtbl, uint64_t probe_before){
+static inline void send_probes(struct send_objs *objs, uint64_t probe_before){
     struct msg_key *key;
     struct msg_send_record *send_record;
     int32_t next = 0;
@@ -174,13 +183,13 @@ static inline void send_probes(struct lcore_params *params, struct linked_hash *
     struct rte_mbuf *pkts[BURST_SIZE_TX];
     while (1)
     {
-        int32_t pos = linked_hash_iterate(hashtbl, (void *)&key, (void *)&send_record, &next);
+        int32_t pos = linked_hash_iterate(objs->active_sends_tbl, (void *)&key, (void *)&send_record, &next);
         if (pos < 0 || send_record->time >= probe_before)
             break;
 
         if (nb_to_send == 0)
         {
-            if (unlikely(rte_pktmbuf_alloc_bulk(params->mbuf_pool, pkts, BURST_SIZE_TX) < 0))
+            if (unlikely(rte_pktmbuf_alloc_bulk(objs->probe_mbuf_pool, pkts, BURST_SIZE_TX) < 0))
             {
                 RTE_LOG_DP(INFO, MBUF,
                            "%s:Probe pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
@@ -196,13 +205,13 @@ static inline void send_probes(struct lcore_params *params, struct linked_hash *
         set_probe_hdr(rte_pktmbuf_mtod(pkt, char*), &send_record->info, key->msgid);
 
         send_record->time = rte_get_timer_cycles();
-        linked_hash_move_pos_to_back(hashtbl, pos);
+        linked_hash_move_pos_to_back(objs->active_sends_tbl, pos);
         nb_to_send++;
 
         if (nb_to_send == BURST_SIZE_TX)
         {
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
@@ -218,7 +227,7 @@ static inline void send_probes(struct lcore_params *params, struct linked_hash *
     if (nb_to_send > 0)
     {
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
@@ -238,20 +247,28 @@ int lcore_send(struct lcore_params *params)
 
     printf("\nCore %u doing send task.\n", rte_lcore_id());
 
-    struct linked_hash *hashtbl = NULL;
-    struct rte_hash_parameters hash_params = {
-        .name = "send_table",
-        .entries = MAX_OUTSTANDING_SENDS,
+    struct send_objs objs;
+    objs.params = params;
+
+    struct rte_hash_parameters active_sends_params = {
+        .name = "active_sends_tbl",
+        .entries = MAX_ACTIVE_SENDS,
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
         .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE
     };
 
-    hashtbl = linked_hash_create(&hash_params);
-    if (hashtbl == NULL)
+    objs.active_sends_tbl = linked_hash_create(&active_sends_params);
+    if (objs.active_sends_tbl == NULL)
     {
-        rte_exit(EXIT_FAILURE, "Error: failed to create send linked hash\n");
+        rte_exit(EXIT_FAILURE, "Error: failed to create active sends linked hash\n");
+    }
+
+    objs.probe_mbuf_pool = rte_pktmbuf_pool_create("PROBE_MBUF_POOL", NB_PROBE_MBUFS,
+                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if(objs.probe_mbuf_pool == NULL){
+        rte_exit(EXIT_FAILURE, "Error: failed to create probe mbuf pool\n");
     }
 
     uint64_t prev_probe = rte_get_timer_cycles();
@@ -264,7 +281,7 @@ int lcore_send(struct lcore_params *params)
         // dequeue and send msg from send_ring
         struct msg_send_record *send_record;
         if (rte_ring_dequeue_burst(params->send_ring, (void *)&send_record, 1, &available_send) > 0)
-            send_msg(params, send_record, hashtbl);
+            send_msg(&objs, send_record);
 
         // process received control messages from rx_send_ring
         struct rte_mbuf *pkts[BURST_SIZE_RX];
@@ -277,7 +294,7 @@ int lcore_send(struct lcore_params *params)
 
             for (unsigned i = 0; i < nb_rx; i++){
                 rte_prefetch_non_temporal((void *)pkts[i+3]);
-                recv_ctrl_pkt(params, pkts[i], hashtbl);
+                recv_ctrl_pkt(&objs, pkts[i]);
             }
         }
 
@@ -288,39 +305,18 @@ int lcore_send(struct lcore_params *params)
         {
             // send resend requests for missing packets
             prev_probe = now;
-            send_probes(params, hashtbl, now - probe_cycles);
+            send_probes(&objs, now - probe_cycles);
         }
     }
     
     RTE_LOG(INFO, HASH,
-            "%s:Number of elements in send linked hash: %u\n", __func__, linked_hash_count(hashtbl));
-    linked_hash_free(hashtbl);
+            "%s:Number of elements in active sends linked hash: %u\n", __func__, linked_hash_count(objs.active_sends_tbl));
+    linked_hash_free(objs.active_sends_tbl);
     
+    RTE_LOG(INFO, MEMPOOL,
+            "%s:Number of elements in probe mbuf pool: %u\n", __func__, rte_mempool_in_use_count(objs.probe_mbuf_pool));
+    rte_mempool_free(objs.probe_mbuf_pool);
+
     printf("\nCore %u exiting send task.\n", rte_lcore_id());
     return 0;
-}
-
-static inline void set_ipv4_cksum(struct rte_ipv4_hdr *hdr)
-{
-    uint16_t *ptr16 = (unaligned_uint16_t *)hdr;
-    uint32_t ip_cksum = 0;
-    ip_cksum += ptr16[0];
-    ip_cksum += ptr16[1];
-    ip_cksum += ptr16[2];
-    ip_cksum += ptr16[3];
-    ip_cksum += ptr16[4];
-    ip_cksum += ptr16[6];
-    ip_cksum += ptr16[7];
-    ip_cksum += ptr16[8];
-    ip_cksum += ptr16[9];
-
-    // Reduce 32 bit checksum to 16 bits and complement it.
-    ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) +
-               (ip_cksum & 0x0000FFFF);
-    if (ip_cksum > 65535)
-        ip_cksum -= 65535;
-    ip_cksum = (~ip_cksum) & 0x0000FFFF;
-    if (ip_cksum == 0)
-        ip_cksum = 0xFFFF;
-    hdr->hdr_checksum = (uint16_t)ip_cksum;
 }
