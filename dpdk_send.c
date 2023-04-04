@@ -82,7 +82,7 @@ static inline void send_msg(struct send_objs *objs, struct msg_send_record *send
                    "%s:Unexpected msg loss due to failed linked_hash_add_key_data\n", __func__);
         for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
             rte_pktmbuf_free(send_record->pkts[pktid]);
-        rte_free(send_record);
+        rte_mempool_put(objs->params->send_record_pool, send_record);
         return;
     }
 
@@ -139,7 +139,7 @@ static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
         for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
             rte_pktmbuf_free(send_record->pkts[pktid]);
 
-        rte_free(send_record);
+        rte_mempool_put(objs->params->send_record_pool, send_record);
         linked_hash_del_key(objs->active_sends_tbl, &key);
         rte_atomic16_dec(&objs->params->outstanding_sends);
     }

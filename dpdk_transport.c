@@ -18,6 +18,8 @@
 #define SCHED_SEND_RING_SZ 65536
 #define SCHED_RECV_RING_SZ 16384
 #define MBUF_CACHE_SIZE 128
+#define SEND_RECORD_POOL_SIZE MAX_ACTIVE_SENDS
+#define SEND_RECORD_CACHE_SIZE 128
 #define RECV_RECORD_POOL_SIZE ((8 * 1024) - 1)
 #define RECV_RECORD_CACHE_SIZE 128
 
@@ -72,6 +74,14 @@ int init(int argc, char *argv[])
         if (port_init(portid) != 0)
             rte_exit(EXIT_FAILURE, "Cannot initialize port %u\n",
                      portid);
+    }
+
+    params->send_record_pool = rte_mempool_create("Send record mempool", SEND_RECORD_POOL_SIZE, sizeof(struct msg_send_record),
+                                                  SEND_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), 0);
+
+    if (params->send_record_pool == NULL)
+    {
+        rte_exit(EXIT_FAILURE, "Error: failed to create send_record_pool\n");
     }
 
     params->recv_record_pool = rte_mempool_create("Recv record mempool", RECV_RECORD_POOL_SIZE, sizeof(struct msg_recv_record),
@@ -185,6 +195,7 @@ int terminate(void)
 
     rte_mempool_free(params->send_mbuf_pool);
     rte_mempool_free(params->recv_mbuf_pool);
+    rte_mempool_free(params->send_record_pool);
     rte_mempool_free(params->recv_record_pool);
     rte_ring_free(params->recv_ring);
     rte_ring_free(params->send_ring);
@@ -217,7 +228,13 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
             break;
     }
 
-    struct msg_send_record *send_record = rte_zmalloc("msg_send_record", sizeof(struct msg_send_record), 0);
+    struct msg_send_record *send_record;
+    if (unlikely(rte_mempool_get(params->send_record_pool, (void *)&send_record) < 0))
+    {
+        rte_atomic16_dec(&params->outstanding_sends);
+        return -1;
+    }
+
     rte_memcpy(&send_record->info, info, sizeof(struct msg_info));
 
     uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(info->length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
@@ -225,7 +242,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
     if (unlikely(rte_pktmbuf_alloc_bulk(params->send_mbuf_pool, send_record->pkts, total_pkts) < 0))
     {
         rte_atomic16_dec(&params->outstanding_sends);
-        rte_free(send_record);
+        rte_mempool_put(params->send_record_pool, send_record);
         return -1;
     }
 
@@ -278,7 +295,7 @@ int send_dpdk(const void *buffer, const struct msg_info *info)
         {
             rte_pktmbuf_free(send_record->pkts[pktid]);
         }
-        rte_free(send_record);
+        rte_mempool_put(params->send_record_pool, send_record);
         return -1;
     }
 
