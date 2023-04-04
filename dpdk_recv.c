@@ -377,7 +377,7 @@ int lcore_recv(struct lcore_params *params)
     }
 
     struct rte_hash_parameters completed_recvs_params = {
-        .name = "completed_recvs_tbl",
+        .name = "compl_recvs_tbl",
         .entries = MAX_COMPLETED_RECVS,
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
