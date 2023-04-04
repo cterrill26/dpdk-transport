@@ -12,8 +12,6 @@
 
 #define RESEND_TIME_US 1000LL
 #define MAX_UNANSWERED_RESEND_REQUESTS 100
-#define MAX_ACTIVE_RECVS 2047
-#define MAX_COMPLETED_RECVS 2047
 #define NB_CTRL_MBUFS ((2 * 1024) - 1)
 #define MBUF_CACHE_SIZE 128
 
@@ -62,6 +60,7 @@ static inline void set_headers(struct rte_mbuf *pkt, struct msg_info *info, uint
 
     set_ipv4_cksum(ip_hdr);
 
+    // Initialize ethernet header.
     union
     {
         uint64_t as_int;
@@ -82,19 +81,19 @@ static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *i
     {
         RTE_LOG_DP(INFO, MBUF,
                    "%s:Completed pkt loss due to failed rte_pktmbuf_alloc\n", __func__);
+        return;
     }
-    else
+
+    pkt->data_len = TOTAL_HDR_SIZE;
+    pkt->pkt_len = TOTAL_HDR_SIZE;
+    pkt->port = info->portid;
+    set_headers(pkt, info, msgid, DPDK_TRANSPORT_COMPLETE, 0);
+
+    if (unlikely(rte_ring_enqueue(objs->params->tx_ring, (void *)pkt) != 0))
     {
-        pkt->data_len = TOTAL_HDR_SIZE;
-        pkt->pkt_len = TOTAL_HDR_SIZE;
-        pkt->port = info->portid;
-        set_headers(pkt, info, msgid, DPDK_TRANSPORT_COMPLETE, 0);
-        if (rte_ring_enqueue(objs->params->tx_ring, (void *)pkt) != 0)
-        {
-            RTE_LOG_DP(INFO, RING,
-                       "%s:Completed pkt loss due to full tx_ring\n", __func__);
-            rte_pktmbuf_free(pkt);
-        }
+        RTE_LOG_DP(INFO, RING,
+                   "%s:Completed pkt loss due to full tx_ring\n", __func__);
+        rte_pktmbuf_free(pkt);
     }
 }
 
@@ -105,8 +104,10 @@ static inline void recv_msg(struct recv_objs *objs, struct msg_recv_record *recv
     if (linked_hash_add_key_data(objs->completed_recvs_tbl, key, NULL) < 0)
     {
         // completed table is full, remove oldest element
-        void *k, *d;
-        linked_hash_del_pos(objs->completed_recvs_tbl, linked_hash_front(objs->completed_recvs_tbl, &k, &d));
+        struct msg_key *front_key;
+        void *d;
+        linked_hash_front(objs->completed_recvs_tbl, (void *)&front_key, &d);
+        linked_hash_del_key(objs->completed_recvs_tbl, front_key);
         if (unlikely(linked_hash_add_key_data(objs->completed_recvs_tbl, key, NULL) < 0))
         {
             RTE_LOG_DP(ERR, HASH,
@@ -191,16 +192,24 @@ static inline void recv_pkt(struct recv_objs *objs, struct rte_mbuf *pkt)
         }
 
         // this is the first packet of a new msg
-        if (unlikely(rte_mempool_get(objs->params->recv_record_pool, (void*)&recv_record) < 0)){
+        if (unlikely(rte_mempool_get(objs->params->recv_record_pool, (void *)&recv_record) < 0))
+        {
             RTE_LOG_DP(DEBUG, MEMPOOL,
                        "%s:Recv pkt loss due to failed rte_mempool_get\n", __func__);
             rte_pktmbuf_free(pkt);
             return;
         }
 
-        memset(recv_record, 0, sizeof(struct msg_recv_record)); //current dpdk version does not have rte_memset
-        rte_mbuf_to_msg_info(pkt, &recv_record->info);
+        // init recv_record with zeroed values
+        recv_record->nb_pkts_received = 0;
+        recv_record->nb_resend_requests = 0;
         recv_record->time = rte_get_timer_cycles();
+        for (uint8_t i = 0; i < MAX_PKTS_IN_MSG; i++)
+            recv_record->pkts[i] = NULL;
+        for (uint8_t i = 0; i < RTE_ALIGN_MUL_CEIL(MAX_PKTS_IN_MSG, 8) / 8; i++)
+            recv_record->pkts_received_mask[i] = 0;
+
+        rte_mbuf_to_msg_info(pkt, &recv_record->info);
 
         pos = linked_hash_add_key_data(objs->active_recvs_tbl, (void *)&key, (void *)recv_record);
         if (unlikely(pos < 0))
@@ -270,7 +279,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
             RTE_LOG_DP(INFO, MBUF,
                        "%s:Deleted recv_record after %d unasnwered resend requests\n", __func__, MAX_UNANSWERED_RESEND_REQUESTS);
             linked_hash_del_key(objs->active_recvs_tbl, key);
-            for(uint8_t pktid = 0; pktid < total_pkts; pktid++)
+            for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
                 rte_pktmbuf_free(recv_record->pkts[pktid]);
             rte_mempool_put(objs->params->recv_record_pool, recv_record);
             continue;
@@ -282,11 +291,11 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
             {
                 RTE_LOG_DP(INFO, MBUF,
                            "%s:Resend request pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
-                break;
+                return;
             }
         }
 
-        struct rte_mbuf *pkt = pkts[nb_to_send];
+        struct rte_mbuf *pkt = pkts[nb_to_send++];
         pkt->data_len = TOTAL_HDR_SIZE + nb_pkts_missing;
         pkt->pkt_len = TOTAL_HDR_SIZE + nb_pkts_missing;
         pkt->port = recv_record->info.portid;
@@ -298,7 +307,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
         for (uint8_t pktid_base = 0; pktid_base < total_pkts; pktid_base += 8)
         {
             uint8_t recv_mask = recv_record->pkts_received_mask[pktid_base / 8];
-            for (uint8_t pktid_offset = 0; pktid_offset < 8 && (pktid_base + pktid_offset) < total_pkts; pktid_offset++)
+            for (uint8_t pktid_offset = 0; pktid_base + pktid_offset < RTE_MIN(total_pkts, pktid_base + 8); pktid_offset++)
             {
                 uint8_t pktid = pktid_base + pktid_offset;
                 if ((recv_mask & (1 << pktid_offset)) == 0)
@@ -309,7 +318,6 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
         recv_record->time = rte_get_timer_cycles();
         recv_record->nb_resend_requests++;
         linked_hash_move_pos_to_back(objs->active_recvs_tbl, pos);
-        nb_to_send++;
 
         if (nb_to_send == BURST_SIZE_TX)
         {
@@ -322,6 +330,8 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
                            "%s:Resend request pkt loss due to full tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
+
+                return;
             }
             nb_to_send = 0;
         }
@@ -381,8 +391,9 @@ int lcore_recv(struct lcore_params *params)
     }
 
     objs.ctrl_mbuf_pool = rte_pktmbuf_pool_create("CTRL_MBUF_POOL", NB_CTRL_MBUFS,
-                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if(objs.ctrl_mbuf_pool == NULL){
+                                                  MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (objs.ctrl_mbuf_pool == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create ctrl mbuf pool\n");
     }
 

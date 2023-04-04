@@ -19,9 +19,12 @@
 #define DPDK_TRANSPORT_COMPLETE 1
 #define DPDK_TRANSPORT_RESEND 2
 
-#define MAX_ACTIVE_SENDS 2047
+#define MAX_ACTIVE_SENDS ((2 * 1024) - 1)
+#define MAX_ACTIVE_RECVS ((2 * 1024) - 1)
+#define MAX_COMPLETED_RECVS ((2 * 1024) - 1)
 
-struct lcore_params {
+struct lcore_params
+{
     struct rte_ring *recv_ring;
     struct rte_ring *send_ring;
     struct rte_ring *tx_ring;
@@ -29,6 +32,7 @@ struct lcore_params {
     struct rte_ring *rx_send_ring;
     struct rte_mempool *send_mbuf_pool;
     struct rte_mempool *recv_mbuf_pool;
+    struct rte_mempool *send_record_pool;
     struct rte_mempool *recv_record_pool;
     rte_atomic16_t outstanding_sends;
     rte_atomic32_t next_msgid;
@@ -70,7 +74,7 @@ struct msg_recv_record
     struct rte_mbuf *pkts[MAX_PKTS_IN_MSG];
     uint64_t time;
     struct msg_info info;
-    uint8_t pkts_received_mask[RTE_ALIGN_MUL_CEIL(MAX_PKTS_IN_MSG, 8)/8]; // mask of received pktids
+    uint8_t pkts_received_mask[RTE_ALIGN_MUL_CEIL(MAX_PKTS_IN_MSG, 8) / 8]; // mask of received pktids
     uint8_t nb_pkts_received;
     uint8_t nb_resend_requests;
 };

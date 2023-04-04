@@ -18,7 +18,7 @@
 #define SCHED_SEND_RING_SZ 65536
 #define SCHED_RECV_RING_SZ 16384
 #define MBUF_CACHE_SIZE 128
-#define RECV_RECORD_POOL_SIZE 8192 - 1
+#define RECV_RECORD_POOL_SIZE ((8 * 1024) - 1)
 #define RECV_RECORD_CACHE_SIZE 128
 
 struct lcore_params *params;
@@ -486,7 +486,7 @@ static inline void set_template_hdr(char *template_hdr, const struct msg_info *i
 
     set_ipv4_cksum(ip_hdr);
 
-    // Set ethernet header.
+    // Initialize ethernet header.
     union
     {
         uint64_t as_int;

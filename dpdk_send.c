@@ -80,7 +80,7 @@ static inline void send_msg(struct send_objs *objs, struct msg_send_record *send
         // user from sending too many messages
         RTE_LOG_DP(ERR, HASH,
                    "%s:Unexpected msg loss due to failed linked_hash_add_key_data\n", __func__);
-        for(uint8_t pktid = 0; pktid < total_pkts; pktid++)
+        for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
             rte_pktmbuf_free(send_record->pkts[pktid]);
         rte_free(send_record);
         return;
@@ -98,13 +98,15 @@ static inline void send_msg(struct send_objs *objs, struct msg_send_record *send
         // enqueue packet buffers to tx_ring
         uint16_t sent;
         sent = rte_ring_enqueue_burst(objs->params->tx_ring,
-                                        (void *)pkts, nb_to_send, NULL);
+                                      (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
             RTE_LOG_DP(INFO, RING,
-                        "%s:Pkt loss due to full tx_ring\n", __func__);
+                       "%s:Pkt loss due to full tx_ring\n", __func__);
             while (sent < nb_to_send)
                 rte_pktmbuf_refcnt_update(pkts[sent++], -1);
+
+            return;
         }
     }
 }
@@ -131,23 +133,26 @@ static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
     }
 
     struct msg_info *info = &send_record->info;
-    if (dpdk_hdr->type == DPDK_TRANSPORT_COMPLETE){
+    if (dpdk_hdr->type == DPDK_TRANSPORT_COMPLETE)
+    {
         uint8_t total_pkts = RTE_ALIGN_MUL_CEIL(info->length, MAX_PKT_MSGDATA_LEN) / MAX_PKT_MSGDATA_LEN;
-        for (uint8_t pktid = 0; pktid < total_pkts ; pktid++)
+        for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
             rte_pktmbuf_free(send_record->pkts[pktid]);
 
         rte_free(send_record);
-        linked_hash_del_key(objs->active_sends_tbl, &key); 
+        linked_hash_del_key(objs->active_sends_tbl, &key);
         rte_atomic16_dec(&objs->params->outstanding_sends);
     }
-    else if (dpdk_hdr->type == DPDK_TRANSPORT_RESEND){
+    else if (dpdk_hdr->type == DPDK_TRANSPORT_RESEND)
+    {
         send_record->time = rte_get_timer_cycles();
         linked_hash_move_pos_to_back(objs->active_sends_tbl, pos);
-        uint8_t nb_resends = (uint8_t) rte_be_to_cpu_32(dpdk_hdr->msg_len);
+        uint8_t nb_resends = (uint8_t)rte_be_to_cpu_32(dpdk_hdr->msg_len);
         struct rte_mbuf *pkts[BURST_SIZE_TX];
         uint8_t *pktids = rte_pktmbuf_mtod_offset(pkt, uint8_t *, TOTAL_HDR_SIZE);
 
-        for(uint8_t i_base = 0; i_base < nb_resends; i_base+=BURST_SIZE_TX){
+        for (uint8_t i_base = 0; i_base < nb_resends; i_base += BURST_SIZE_TX)
+        {
             uint8_t nb_to_send = RTE_MIN(BURST_SIZE_TX, nb_resends - i_base);
 
             for (uint8_t i_offset = 0; i_offset < nb_to_send; i_offset++)
@@ -168,13 +173,16 @@ static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
                            "%s:Resend packet loss due to full tx_ring\n", __func__);
                 while (sent < nb_to_send)
                     rte_pktmbuf_refcnt_update(pkts[sent++], -1);
+
+                break;
             }
         }
     }
     rte_pktmbuf_free(pkt);
 }
 
-static inline void send_probes(struct send_objs *objs, uint64_t probe_before){
+static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
+{
     struct msg_key *key;
     struct msg_send_record *send_record;
     int32_t next = 0;
@@ -193,20 +201,19 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before){
             {
                 RTE_LOG_DP(INFO, MBUF,
                            "%s:Probe pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
-                break;
+                return;
             }
         }
 
-        struct rte_mbuf *pkt = pkts[nb_to_send];
+        struct rte_mbuf *pkt = pkts[nb_to_send++];
         pkt->data_len = TOTAL_HDR_SIZE;
         pkt->pkt_len = TOTAL_HDR_SIZE;
         pkt->port = send_record->info.portid;
 
-        set_probe_hdr(rte_pktmbuf_mtod(pkt, char*), &send_record->info, key->msgid);
+        set_probe_hdr(rte_pktmbuf_mtod(pkt, char *), &send_record->info, key->msgid);
 
         send_record->time = rte_get_timer_cycles();
         linked_hash_move_pos_to_back(objs->active_sends_tbl, pos);
-        nb_to_send++;
 
         if (nb_to_send == BURST_SIZE_TX)
         {
@@ -219,6 +226,8 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before){
                            "%s:Resend request pkt loss due to full tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
+
+                return;
             }
             nb_to_send = 0;
         }
@@ -256,8 +265,7 @@ int lcore_send(struct lcore_params *params)
         .key_len = sizeof(struct msg_key),
         .hash_func = rte_hash_crc,
         .socket_id = rte_socket_id(),
-        .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE
-    };
+        .extra_flag = RTE_HASH_EXTRA_FLAGS_EXT_TABLE};
 
     objs.active_sends_tbl = linked_hash_create(&active_sends_params);
     if (objs.active_sends_tbl == NULL)
@@ -266,8 +274,9 @@ int lcore_send(struct lcore_params *params)
     }
 
     objs.probe_mbuf_pool = rte_pktmbuf_pool_create("PROBE_MBUF_POOL", NB_PROBE_MBUFS,
-                                                MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if(objs.probe_mbuf_pool == NULL){
+                                                   MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (objs.probe_mbuf_pool == NULL)
+    {
         rte_exit(EXIT_FAILURE, "Error: failed to create probe mbuf pool\n");
     }
 
@@ -292,8 +301,9 @@ int lcore_send(struct lcore_params *params)
             rte_prefetch_non_temporal((void *)pkts[1]);
             rte_prefetch_non_temporal((void *)pkts[2]);
 
-            for (unsigned i = 0; i < nb_rx; i++){
-                rte_prefetch_non_temporal((void *)pkts[i+3]);
+            for (unsigned i = 0; i < nb_rx; i++)
+            {
+                rte_prefetch_non_temporal((void *)pkts[i + 3]);
                 recv_ctrl_pkt(&objs, pkts[i]);
             }
         }
@@ -301,18 +311,18 @@ int lcore_send(struct lcore_params *params)
         uint64_t now = rte_get_timer_cycles();
         uint64_t probe_cycles = (PROBE_TIME_US * rte_get_timer_hz()) / 1e6;
 
-        if ((available_send == 0 && available_ctrl == 0 && now > probe_cycles) || (prev_probe + probe_cycles < now))
+        if (unlikely((available_send == 0 && available_ctrl == 0 && now > probe_cycles) || (prev_probe + probe_cycles < now)))
         {
             // send resend requests for missing packets
             prev_probe = now;
             send_probes(&objs, now - probe_cycles);
         }
     }
-    
+
     RTE_LOG(INFO, HASH,
             "%s:Number of elements in active sends linked hash: %u\n", __func__, linked_hash_count(objs.active_sends_tbl));
     linked_hash_free(objs.active_sends_tbl);
-    
+
     RTE_LOG(INFO, MEMPOOL,
             "%s:Number of elements in probe mbuf pool: %u\n", __func__, rte_mempool_in_use_count(objs.probe_mbuf_pool));
     rte_mempool_free(objs.probe_mbuf_pool);
