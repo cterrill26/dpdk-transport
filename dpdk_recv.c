@@ -276,7 +276,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
 
         if (unlikely(recv_record->nb_resend_requests >= MAX_UNANSWERED_RESEND_REQUESTS))
         {
-            RTE_LOG_DP(INFO, MBUF,
+            RTE_LOG_DP(DEBUG, MBUF,
                        "%s:Deleted recv_record after %d unasnwered resend requests\n", __func__, MAX_UNANSWERED_RESEND_REQUESTS);
             linked_hash_del_key(objs->active_recvs_tbl, key);
             for (uint8_t pktid = 0; pktid < total_pkts; pktid++)
