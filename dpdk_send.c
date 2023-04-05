@@ -242,8 +242,6 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
         {
             RTE_LOG_DP(INFO, RING,
                        "%s:Resend request pkt loss due to full tx_ring\n", __func__);
-            while (sent < nb_to_send)
-                rte_pktmbuf_free(pkts[sent++]);
         }
 
         while (sent < BURST_SIZE_TX)

@@ -346,8 +346,6 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
         {
             RTE_LOG_DP(INFO, RING,
                        "%s:Resend request pkt loss due to full tx_ring\n", __func__);
-            while (sent < nb_to_send)
-                rte_pktmbuf_free(pkts[sent++]);
         }
 
         while (sent < BURST_SIZE_TX)
