@@ -9,7 +9,7 @@
 #include "linked_hash.h"
 
 #define PROBE_TIME_US 50000LL
-#define NB_PROBE_MBUFS ((1 * 1024) - 1)
+#define NB_PROBE_MBUFS MAX_ACTIVE_SENDS
 #define MBUF_CACHE_SIZE 128
 
 struct send_objs
@@ -101,7 +101,7 @@ static inline void send_msg(struct send_objs *objs, struct msg_send_record *send
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
-            RTE_LOG_DP(INFO, RING,
+            RTE_LOG_DP(DEBUG, RING,
                        "%s:Pkt loss due to full tx_ring\n", __func__);
             while (sent < nb_to_send)
                 rte_pktmbuf_refcnt_update(pkts[sent++], -1);
@@ -169,7 +169,7 @@ static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
                                           (void *)pkts, nb_to_send, NULL);
             if (unlikely(sent < nb_to_send))
             {
-                RTE_LOG_DP(INFO, RING,
+                RTE_LOG_DP(DEBUG, RING,
                            "%s:Resend packet loss due to full tx_ring\n", __func__);
                 while (sent < nb_to_send)
                     rte_pktmbuf_refcnt_update(pkts[sent++], -1);
@@ -199,7 +199,7 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
         {
             if (unlikely(rte_pktmbuf_alloc_bulk(objs->probe_mbuf_pool, pkts, BURST_SIZE_TX) < 0))
             {
-                RTE_LOG_DP(INFO, MBUF,
+                RTE_LOG_DP(DEBUG, MBUF,
                            "%s:Probe pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
                 return;
             }
@@ -222,7 +222,7 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
-                RTE_LOG_DP(INFO, RING,
+                RTE_LOG_DP(DEBUG, RING,
                            "%s:Resend request pkt loss due to full tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
@@ -240,7 +240,7 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
-            RTE_LOG_DP(INFO, RING,
+            RTE_LOG_DP(DEBUG, RING,
                        "%s:Resend request pkt loss due to full tx_ring\n", __func__);
         }
 

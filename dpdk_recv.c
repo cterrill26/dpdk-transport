@@ -10,9 +10,9 @@
 #include "dpdk_common.h"
 #include "linked_hash.h"
 
-#define RESEND_TIME_US 1000LL
+#define RESEND_TIME_US 5000LL
 #define MAX_UNANSWERED_RESEND_REQUESTS 100
-#define NB_CTRL_MBUFS ((2 * 1024) - 1)
+#define NB_CTRL_MBUFS MAX_ACTIVE_RECVS
 #define MBUF_CACHE_SIZE 128
 
 struct recv_objs
@@ -79,7 +79,7 @@ static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *i
     struct rte_mbuf *pkt = rte_pktmbuf_alloc(objs->ctrl_mbuf_pool);
     if (unlikely(pkt == NULL))
     {
-        RTE_LOG_DP(INFO, MBUF,
+        RTE_LOG_DP(DEBUG, MBUF,
                    "%s:Completed pkt loss due to failed rte_pktmbuf_alloc\n", __func__);
         return;
     }
@@ -91,7 +91,7 @@ static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *i
 
     if (unlikely(rte_ring_enqueue(objs->params->tx_ring, (void *)pkt) != 0))
     {
-        RTE_LOG_DP(INFO, RING,
+        RTE_LOG_DP(DEBUG, RING,
                    "%s:Completed pkt loss due to full tx_ring\n", __func__);
         rte_pktmbuf_free(pkt);
     }
@@ -289,7 +289,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
         {
             if (unlikely(rte_pktmbuf_alloc_bulk(objs->ctrl_mbuf_pool, pkts, BURST_SIZE_TX) < 0))
             {
-                RTE_LOG_DP(INFO, MBUF,
+                RTE_LOG_DP(DEBUG, MBUF,
                            "%s:Resend request pkt loss due to failed rte_pktmbuf_alloc_bulk\n", __func__);
                 return;
             }
@@ -326,7 +326,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
-                RTE_LOG_DP(INFO, RING,
+                RTE_LOG_DP(DEBUG, RING,
                            "%s:Resend request pkt loss due to full tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
@@ -344,7 +344,7 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
-            RTE_LOG_DP(INFO, RING,
+            RTE_LOG_DP(DEBUG, RING,
                        "%s:Resend request pkt loss due to full tx_ring\n", __func__);
         }
 
