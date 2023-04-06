@@ -10,18 +10,20 @@ RTE_TARGET ?= x86_64-native-linuxapp-gcc
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
-# library name
-LIB = libdpdk_transport.a
+# binary name
+APP = echoer
+
+DPDK_TRANSPORTDIR = $(SRCDIR)/../../build
 
 # all source are stored in SRCS-y
 SRCS-y := $(wildcard $(SRCDIR)/src/*.c)
 
-INCLUDES := -I$(SRCDIR)/include
-
-SYMLINK-y-include += include/dpdk_transport.h 
+INCLUDES := -I$(DPDK_TRANSPORTDIR)/include
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 CFLAGS += $(INCLUDES)
 
-include $(RTE_SDK)/mk/rte.extlib.mk
+EXTRA_LDLIBS := -L$(DPDK_TRANSPORTDIR)/lib -ldpdk_transport
+
+include $(RTE_SDK)/mk/rte.extapp.mk
