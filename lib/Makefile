@@ -8,14 +8,22 @@ RTE_TARGET ?= $(notdir $(abspath $(dir $(firstword $(wildcard $(RTE_SDK)/*/.conf
 include $(RTE_SDK)/mk/rte.vars.mk
 
 ifneq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
-$(info This application can only operate in a linux environment, \
+$(error This application can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
-else
-
-DIRS-y += lib tests/echoer tests/initiator
 endif
 
-DEPDIRS-tests/echoer := lib
-DEPDIRS-tests/initiator := lib
+# library name
+LIB = libdpdk_transport.a
 
-include $(RTE_SDK)/mk/rte.extsubdir.mk
+LIBABIVER := 1
+
+# all source are stored in SRC-Y
+SRCS-y := $(wildcard $(SRCDIR)/src/*.c)
+
+CFLAGS += -O3
+CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -I$(SRCDIR)/include
+
+SYMLINK-y-include += $(SRCDIR)/include/dpdk_transport.h 
+
+include $(RTE_SDK)/mk/rte.extlib.mk
