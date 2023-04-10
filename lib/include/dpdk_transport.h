@@ -2,6 +2,8 @@
 #define DPDK_TRANSPORT_H
 
 #define MAX_MSG_SIZE 100000
+#define F_SINGLE_SEND 0x1
+#define F_SINGLE_RECV 0x2
 
 #include <inttypes.h>
 
@@ -15,7 +17,7 @@ struct msg_info
 	uint16_t portid;
 };
 
-int init(int argc, char *argv[]);
+int init(int argc, char *argv[], unsigned int flags);
 int terminate(void);
 int send_dpdk(const void *buffer, const struct msg_info *info);
 uint32_t recv_dpdk(void *buffer, struct msg_info *info, unsigned int *available);

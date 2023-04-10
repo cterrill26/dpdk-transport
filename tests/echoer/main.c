@@ -4,10 +4,10 @@
 #include <unistd.h>
 #include "dpdk_transport.h"
 
-#define NUM_MSGS 1000
+#define NUM_MSGS 4000
 
 int main(int argc, char *argv[]){
-    init(argc, argv);
+    init(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
 
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     for(int i = 0; i < NUM_MSGS; i++) {

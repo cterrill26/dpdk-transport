@@ -9,7 +9,7 @@
 
 
 int main(int argc, char *argv[]){
-    int ret = init(argc, argv);
+    int ret = init(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
     argc -= ret;
     argv += ret;
 

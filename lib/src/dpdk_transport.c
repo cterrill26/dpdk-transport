@@ -12,7 +12,8 @@
 #define TX_RING_SIZE 1024
 #define NB_SEND_MBUFS ((64 * 1024) - 1)
 #define NB_RECV_MBUFS ((64 * 1024) - 1)
-#define SCHED_TX_RING_SZ 65536
+#define SCHED_SEND_TX_RING_SZ 65536
+#define SCHED_RECV_TX_RING_SZ 65536
 #define SCHED_RX_SEND_RING_SZ 65536
 #define SCHED_RX_RECV_RING_SZ 65536
 #define SCHED_SEND_RING_SZ 65536
@@ -34,7 +35,7 @@ static const struct rte_eth_conf port_conf_default = {
 static int port_init(uint16_t portid);
 static inline void set_template_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid);
 
-int init(int argc, char *argv[])
+int init(int argc, char *argv[], unsigned int flags)
 {
     /* Initialize the Environment Abstraction Layer (EAL). */
     int ret = rte_eal_init(argc, argv);
@@ -76,8 +77,11 @@ int init(int argc, char *argv[])
                      portid);
     }
 
+    unsigned int _flags;
+
+    _flags = (flags & F_SINGLE_SEND)? MEMPOOL_F_SC_GET : 0;
     params->send_record_pool = rte_mempool_create("Send record mempool", SEND_RECORD_POOL_SIZE, sizeof(struct msg_send_record),
-                                                  SEND_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), 0);
+                                                  SEND_RECORD_CACHE_SIZE, 0, NULL, NULL, NULL, NULL, rte_socket_id(), _flags);
 
     if (params->send_record_pool == NULL)
     {
@@ -93,15 +97,17 @@ int init(int argc, char *argv[])
     }
 
     /* initialize all rings */
+    _flags = RING_F_SP_ENQ | ((flags & F_SINGLE_RECV)? RING_F_SC_DEQ : 0);
     params->recv_ring = rte_ring_create("Recv_ring", SCHED_RECV_RING_SZ,
-                                        rte_socket_id(), RING_F_SP_ENQ);
+                                        rte_socket_id(), _flags);
     if (params->recv_ring == NULL)
     {
         rte_exit(EXIT_FAILURE, "Error: failed to create recv_ring\n");
     }
 
+    _flags = RING_F_SC_DEQ | ((flags & F_SINGLE_SEND)? RING_F_SP_ENQ : 0);
     params->send_ring = rte_ring_create("Send_ring", SCHED_SEND_RING_SZ,
-                                        rte_socket_id(), RING_F_SC_DEQ);
+                                        rte_socket_id(), _flags);
     if (params->send_ring == NULL)
     {
         rte_exit(EXIT_FAILURE, "Error: failed to create send_ring\n");
@@ -121,11 +127,18 @@ int init(int argc, char *argv[])
         rte_exit(EXIT_FAILURE, "Error: failed to create rx_send_ring\n");
     }
 
-    params->tx_ring = rte_ring_create("Tx_ring", SCHED_TX_RING_SZ,
-                                      rte_socket_id(), RING_F_SC_DEQ);
-    if (params->tx_ring == NULL)
+    params->send_tx_ring = rte_ring_create("Send_tx_ring", SCHED_SEND_TX_RING_SZ,
+                                      rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->send_tx_ring == NULL)
     {
-        rte_exit(EXIT_FAILURE, "Error: failed to create tx_ring\n");
+        rte_exit(EXIT_FAILURE, "Error: failed to create send_tx_ring\n");
+    }
+
+    params->recv_tx_ring = rte_ring_create("Recv_tx_ring", SCHED_RECV_TX_RING_SZ,
+                                      rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+    if (params->recv_tx_ring == NULL)
+    {
+        rte_exit(EXIT_FAILURE, "Error: failed to create recv_tx_ring\n");
     }
 
     if (rte_lcore_count() < 5)
@@ -201,7 +214,8 @@ int terminate(void)
     rte_ring_free(params->send_ring);
     rte_ring_free(params->rx_send_ring);
     rte_ring_free(params->rx_recv_ring);
-    rte_ring_free(params->tx_ring);
+    rte_ring_free(params->send_tx_ring);
+    rte_ring_free(params->recv_tx_ring);
 
     rte_free(params);
 

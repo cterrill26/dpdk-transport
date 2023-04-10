@@ -95,14 +95,14 @@ static inline void send_msg(struct send_objs *objs, struct msg_send_record *send
         for (uint8_t pktid_offset = 0; pktid_offset < nb_to_send; pktid_offset++)
             rte_pktmbuf_refcnt_update(pkts[pktid_offset], 1);
 
-        // enqueue packet buffers to tx_ring
+        // enqueue packet buffers to send_tx_ring
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->send_tx_ring,
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
             RTE_LOG_DP(DEBUG, RING,
-                       "%s:Pkt loss due to full tx_ring\n", __func__);
+                       "%s:Pkt loss due to full send_tx_ring\n", __func__);
             while (sent < nb_to_send)
                 rte_pktmbuf_refcnt_update(pkts[sent++], -1);
 
@@ -163,14 +163,14 @@ static inline void recv_ctrl_pkt(struct send_objs *objs, struct rte_mbuf *pkt)
                 rte_pktmbuf_refcnt_update(pkts[i_offset], 1);
             }
 
-            // enqueue packet buffers to tx_ring
+            // enqueue packet buffers to send_tx_ring
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->send_tx_ring,
                                           (void *)pkts, nb_to_send, NULL);
             if (unlikely(sent < nb_to_send))
             {
                 RTE_LOG_DP(DEBUG, RING,
-                           "%s:Resend packet loss due to full tx_ring\n", __func__);
+                           "%s:Resend packet loss due to full send_tx_ring\n", __func__);
                 while (sent < nb_to_send)
                     rte_pktmbuf_refcnt_update(pkts[sent++], -1);
 
@@ -218,12 +218,12 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
         if (nb_to_send == BURST_SIZE_TX)
         {
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->send_tx_ring,
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
                 RTE_LOG_DP(DEBUG, RING,
-                           "%s:Resend request pkt loss due to full tx_ring\n", __func__);
+                           "%s:Resend request pkt loss due to full send_tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
 
@@ -236,12 +236,12 @@ static inline void send_probes(struct send_objs *objs, uint64_t probe_before)
     if (nb_to_send > 0)
     {
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->send_tx_ring,
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
             RTE_LOG_DP(DEBUG, RING,
-                       "%s:Resend request pkt loss due to full tx_ring\n", __func__);
+                       "%s:Resend request pkt loss due to full send_tx_ring\n", __func__);
         }
 
         while (sent < BURST_SIZE_TX)

@@ -89,10 +89,10 @@ static inline void send_completed_pkt(struct recv_objs *objs, struct msg_info *i
     pkt->port = info->portid;
     set_headers(pkt, info, msgid, DPDK_TRANSPORT_COMPLETE, 0);
 
-    if (unlikely(rte_ring_enqueue(objs->params->tx_ring, (void *)pkt) != 0))
+    if (unlikely(rte_ring_enqueue(objs->params->recv_tx_ring, (void *)pkt) != 0))
     {
         RTE_LOG_DP(DEBUG, RING,
-                   "%s:Completed pkt loss due to full tx_ring\n", __func__);
+                   "%s:Completed pkt loss due to full recv_tx_ring\n", __func__);
         rte_pktmbuf_free(pkt);
     }
 }
@@ -322,12 +322,12 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
         if (nb_to_send == BURST_SIZE_TX)
         {
             uint16_t sent;
-            sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+            sent = rte_ring_enqueue_burst(objs->params->recv_tx_ring,
                                           (void *)pkts, BURST_SIZE_TX, NULL);
             if (unlikely(sent < BURST_SIZE_TX))
             {
                 RTE_LOG_DP(DEBUG, RING,
-                           "%s:Resend request pkt loss due to full tx_ring\n", __func__);
+                           "%s:Resend request pkt loss due to full recv_tx_ring\n", __func__);
                 while (sent < BURST_SIZE_TX)
                     rte_pktmbuf_free(pkts[sent++]);
 
@@ -340,12 +340,12 @@ static inline void request_resends(struct recv_objs *objs, uint64_t resend_befor
     if (nb_to_send > 0)
     {
         uint16_t sent;
-        sent = rte_ring_enqueue_burst(objs->params->tx_ring,
+        sent = rte_ring_enqueue_burst(objs->params->recv_tx_ring,
                                       (void *)pkts, nb_to_send, NULL);
         if (unlikely(sent < nb_to_send))
         {
             RTE_LOG_DP(DEBUG, RING,
-                       "%s:Resend request pkt loss due to full tx_ring\n", __func__);
+                       "%s:Resend request pkt loss due to full recv_tx_ring\n", __func__);
         }
 
         while (sent < BURST_SIZE_TX)

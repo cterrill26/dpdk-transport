@@ -27,7 +27,8 @@ struct lcore_params
 {
     struct rte_ring *recv_ring;
     struct rte_ring *send_ring;
-    struct rte_ring *tx_ring;
+    struct rte_ring *send_tx_ring;
+    struct rte_ring *recv_tx_ring;
     struct rte_ring *rx_recv_ring;
     struct rte_ring *rx_send_ring;
     struct rte_mempool *send_mbuf_pool;
