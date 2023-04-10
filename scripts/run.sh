@@ -1,4 +1,3 @@
-id
 source scripts/setup.sh
 make
 cd tests/initiator/
