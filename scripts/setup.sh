@@ -7,7 +7,7 @@ modprobe uio
 modprobe hwmon
 insmod ./x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
 insmod ./x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-export DPDK_IPV4=$(ifconfig eth0 | grep 'inet ' | awk '{print $2}') 
-ifconfig eth0 down
-./usertools/dpdk-devbind.py --bind=igb_uio eth0
+export DPDK_IPV4=$(ifconfig eth1 | grep 'inet ' | awk '{print $2}') 
+ifconfig eth1 down
+./usertools/dpdk-devbind.py --bind=igb_uio eth1
 cd $OLDPWD
