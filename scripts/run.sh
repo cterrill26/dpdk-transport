@@ -1,4 +1,4 @@
-sudo su
+id
 source scripts/setup.sh
 make
 cd tests/initiator/
