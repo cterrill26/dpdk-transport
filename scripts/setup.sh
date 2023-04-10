@@ -10,4 +10,5 @@ insmod ./x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
 export DPDK_IPV4=$(ifconfig eth1 | grep 'inet ' | awk '{print $2}') 
 ifconfig eth1 down
 ./usertools/dpdk-devbind.py --bind=igb_uio eth1
+sleep 1
 cd $OLDPWD
