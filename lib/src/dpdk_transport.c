@@ -35,7 +35,7 @@ static const struct rte_eth_conf port_conf_default = {
 static int port_init(uint16_t portid);
 static inline void set_template_hdr(char *template_hdr, const struct msg_info *info, uint32_t msgid);
 
-int init(int argc, char *argv[], unsigned int flags)
+int init_dpdk(int argc, char *argv[], unsigned int flags)
 {
     /* Initialize the Environment Abstraction Layer (EAL). */
     int ret = rte_eal_init(argc, argv);
@@ -192,7 +192,7 @@ int init(int argc, char *argv[], unsigned int flags)
     return ret;
 }
 
-int terminate(void)
+int terminate_dpdk(void)
 {
     params->quit_signal_rx = 1;
     params->quit_signal_tx = 1;
@@ -452,7 +452,7 @@ uint64_t port_to_mac(uint16_t portid)
 }
 
 // convert a quad-dot IP string to uint32_t IP address
-uint32_t string_to_ip(char *s)
+uint32_t string_to_ip(const char *s)
 {
     unsigned char a[4];
     int rc = sscanf(s, "%hhd.%hhd.%hhd.%hhd", a + 0, a + 1, a + 2, a + 3);
@@ -469,7 +469,7 @@ uint32_t string_to_ip(char *s)
 }
 
 // convert six colon separated hex bytes string to uint64_t Ethernet MAC address
-uint64_t string_to_mac(char *s)
+uint64_t string_to_mac(const char *s)
 {
     unsigned char a[6];
     int rc = sscanf(s, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",

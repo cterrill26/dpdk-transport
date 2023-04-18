@@ -9,7 +9,7 @@
 
 
 int main(int argc, char *argv[]){
-    int ret = init(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
+    int ret = init_dpdk(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
     argc -= ret;
     argv += ret;
 
@@ -100,7 +100,7 @@ int main(int argc, char *argv[]){
     }
 
     sleep(2);
-    terminate();
+    terminate_dpdk();
 
     return 0;
 }

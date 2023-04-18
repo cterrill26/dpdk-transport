@@ -7,7 +7,7 @@
 #define NUM_MSGS 4000
 
 int main(int argc, char *argv[]){
-    init(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
+    init_dpdk(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
 
     uint16_t recv[MAX_MSG_SIZE/sizeof(uint16_t)];
     for(int i = 0; i < NUM_MSGS; i++) {
@@ -29,7 +29,7 @@ int main(int argc, char *argv[]){
     }
 
     sleep(2);
-    terminate();
+    terminate_dpdk();
 
     return 0;
 }
