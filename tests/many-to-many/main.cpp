@@ -224,14 +224,14 @@ int main(int argc, char *argv[])
     argc -= ret;
     argv += ret;
 
-    bool f_flag = false, n_flag = false;
+    bool f_flag = false;
     string filename;
     bool is_controller = false;
-    int num_msgs = 0;
+    int num_msgs = 1000;
     int msg_len = 1000;
 
     char c;
-    while ((c = getopt(argc, argv, "f:c:n:l")) != -1)
+    while ((c = getopt(argc, argv, "f:cn:l")) != -1)
         switch (c)
         {
         case 'f':
@@ -242,7 +242,6 @@ int main(int argc, char *argv[])
             is_controller = true;
             break;
         case 'n':
-            n_flag = true;
             num_msgs = atoi(optarg);
             break;
         case 'l':
@@ -256,12 +255,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    if (!n_flag)
-    {
-        cerr << "missing -n for number of messages to send" << endl;
-        exit(1);
-    }
-    else if (num_msgs <= 0)
+    if (num_msgs <= 0)
     {
         cerr << "number of messages must be positive: " << num_msgs << endl;
         exit(1);
@@ -280,13 +274,18 @@ int main(int argc, char *argv[])
     {
         // this nodes simply starts the other nodes and collects
         // performance measurements at the end
+
+        cout << "starting controller" << endl;
+        cout << "sending start msgs" << endl;
         for (auto addr : other_addrs)
         {
             send_status_msg(my_addr, addr, START);
         }
 
+        cout << "waiting for done messages" << endl;
         wait_for_done_msgs(other_addrs);
 
+        cout << "sending done messages" << endl;
         // send done message to nodes to tell them to terminate
         for (auto addr : other_addrs)
         {
@@ -296,18 +295,25 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    cout << "starting worker nodes" << endl;
+
+    cout << "waiting for start msg" << endl;
     // this node is not the controller, so it must wait for the
     // controller's start message
     auto controller_addr = wait_for_start_msg();
 
     sleep(2);
 
+    cout << "starting main loop" << endl;
     main_loop(my_addr, other_addrs, num_msgs, msg_len);
 
+    cout << "sending done msg" << endl;
     send_status_msg(my_addr, controller_addr, DONE);
 
+    cout << "starting done loop" << endl;
     done_loop();
 
+    cout << "terminating" << endl;
     sleep(2);
 
     terminate_dpdk();
