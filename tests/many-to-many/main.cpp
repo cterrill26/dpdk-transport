@@ -46,7 +46,7 @@ vector<NodeAddr> get_addrs_from_file(const string &filename, NodeAddr &my_addr)
         {
             NodeAddr addr;
             addr.ip = string_to_ip(ip.c_str());
-            addr.mac = string_to_mac(mac.c_str());
+            addr.mac = string_to_mac(mac.c_str()) << 16;
 
             if (first)
             {
