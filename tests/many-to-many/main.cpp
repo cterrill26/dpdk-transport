@@ -170,7 +170,7 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
                 for (int b = 1; b < msg_len; b++)
                     if (buffer[b] != ((i + b) % 256))
                     {
-                        cerr << "incorrect response msg content: " << buffer[b] << " expected: " << ((i + b) % 256) << " index: " << b << endl;
+                        cerr << "incorrect response msg content: " << ((int) buffer[b]) << " expected: " << ((i + b) % 256) << " index: " << b << endl;
                         exit(1);
                     }
 
