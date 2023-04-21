@@ -168,9 +168,9 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
 
                 // verify each byte is correct
                 for (int b = 1; b < msg_len; b++)
-                    if (buffer[b] != ((i + b) % 256))
+                    if (buffer[b] != ((uint8_t)((i + b) % 256)))
                     {
-                        cerr << "incorrect response msg content: " << ((int) buffer[b]) << " expected: " << ((i + b) % 256) << " index: " << b << endl;
+                        cerr << "incorrect response msg content: " << ((uint8_t) buffer[b]) << " expected: " << ((uint8_t)((i + b) % 256)) << " index: " << b << endl;
                         exit(1);
                     }
 
