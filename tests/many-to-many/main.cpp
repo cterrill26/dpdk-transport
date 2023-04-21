@@ -71,7 +71,7 @@ vector<NodeAddr> get_addrs_from_file(const string &filename, NodeAddr &my_addr)
 
 NodeAddr wait_for_start_msg()
 {
-    char buffer[MAX_MSG_SIZE];
+    unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
     while (recv_dpdk((void *)buffer, &info, NULL) == 0)
         continue;
@@ -91,7 +91,7 @@ NodeAddr wait_for_start_msg()
 
 void send_status_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type)
 {
-    char buffer[] = {type};
+    unsigned char buffer[] = {type};
 
     msg_info info;
     info.dst_ip = dst_addr.ip;
@@ -111,7 +111,7 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
         ips.insert(addr.ip);
     }
 
-    char buffer[MAX_MSG_SIZE];
+    unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
 
     while(!ips.empty()){
@@ -130,7 +130,7 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
 
 void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len)
 {
-    char buffer[MAX_MSG_SIZE];
+    unsigned char buffer[MAX_MSG_SIZE];
     for (int i = 0; i < num_msgs; i++)
     {
         // first send a request message
@@ -168,7 +168,7 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
 
                 // verify each byte is correct
                 for (int b = 1; b < msg_len; b++)
-                    if (((unsigned int) buffer[b]) != ((unsigned int)((i + b) % 256)))
+                    if (buffer[b] != ((unsigned char)((i + b) % 256)))
                     {
                         cerr << "incorrect response msg content: " << ((unsigned int) buffer[b]) << " expected: " << ((unsigned int)((i + b) % 256)) << " index: " << b << endl;
                         exit(1);
@@ -193,7 +193,7 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
 
 void done_loop()
 {
-    char buffer[MAX_MSG_SIZE];
+    unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
 
     while (true)
