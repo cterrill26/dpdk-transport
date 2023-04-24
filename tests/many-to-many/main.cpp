@@ -1,9 +1,11 @@
 #include <string>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <unistd.h>
 #include <vector>
 #include <unordered_set>
+#include <chrono>
 #include "dpdk_transport.h"
 
 using namespace std;
@@ -13,7 +15,8 @@ enum MsgType
     START,
     DONE,
     REQUEST,
-    RESPONSE
+    RESPONSE,
+    TERMINATE
 };
 
 struct NodeAddr
@@ -24,10 +27,10 @@ struct NodeAddr
 
 vector<NodeAddr> get_addrs_from_file(const string &filename, NodeAddr &my_addr);
 NodeAddr wait_for_start_msg();
-void send_status_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type);
+void send_status_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type, const string &body);
 void wait_for_done_msgs(const vector<NodeAddr> &addrs);
-void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
-void done_loop();
+int64_t main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
+void terminate_loop();
 
 // lines in address file are assumed to be formated
 // as "192.168.123.132,00:1b:63:84:45:e6" for ip and mac address,
@@ -89,9 +92,11 @@ NodeAddr wait_for_start_msg()
     return ret;
 }
 
-void send_status_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type)
+void send_status_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type, const string &body)
 {
-    unsigned char buffer[] = {type};
+    char buffer[body.length() + 2];
+    buffer[0] = type;
+    strcpy(&buffer[1], body.c_str());
 
     msg_info info;
     info.dst_ip = dst_addr.ip;
@@ -113,6 +118,7 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
 
     unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
+    long long int total_latency = 0;
 
     while(!ips.empty()){
         while (recv_dpdk((void *)buffer, &info, NULL) == 0)
@@ -123,14 +129,25 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
             cerr << "Controller node received incorrect done message: " << buffer[0] << endl;
             exit(1);
         }
+        else if (info.length <= 1){
+            cerr << "Controller node received empty done message body" << endl;
+            exit(1);
+        }
 
+        string latency = (char*) &buffer[1];
+        cout << "Single node's latency: " << latency << endl;
+        total_latency += stoll(latency);
         ips.erase(info.src_ip);
     }
+
+    cout << "Avg node latency: " << total_latency / addrs.size() << endl;
 }
 
-void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len)
+int64_t main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len)
 {
     unsigned char buffer[MAX_MSG_SIZE];
+    int64_t total_latency = 0;
+
     for (int i = 0; i < num_msgs; i++)
     {
         // first send a request message
@@ -148,6 +165,7 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
         for (int b = 1; b < msg_len; b++)
             buffer[b] = (i + b) % 256;
 
+        auto send_time = chrono::high_resolution_clock::now();
         while (send_dpdk(buffer, &info) < 0)
             continue;
 
@@ -159,7 +177,11 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
 
             if (buffer[0] == RESPONSE)
             {
-                // receive echo response, check msg length
+                // receive echo response
+                auto recv_time = chrono::high_resolution_clock::now();
+                total_latency += chrono::duration_cast<std::chrono::nanoseconds>(recv_time - send_time).count();
+
+                // check msg length
                 if (info.length != ((uint32_t) msg_len))
                 {
                     cerr << "incorrect response msg length: " << info.length << " expected: " << msg_len << endl;
@@ -189,9 +211,11 @@ void main_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int
             }
         }
     }
+
+    return total_latency / num_msgs;
 }
 
-void done_loop()
+void terminate_loop()
 {
     unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
@@ -211,7 +235,7 @@ void done_loop()
             while (send_dpdk(buffer, &info) < 0)
                 continue;
         }
-        else if (buffer[0] == DONE)
+        else if (buffer[0] == TERMINATE)
         {
             break;
         }
@@ -279,17 +303,17 @@ int main(int argc, char *argv[])
         cout << "sending start msgs" << endl;
         for (auto addr : other_addrs)
         {
-            send_status_msg(my_addr, addr, START);
+            send_status_msg(my_addr, addr, START, "");
         }
 
         cout << "waiting for done messages" << endl;
         wait_for_done_msgs(other_addrs);
 
-        cout << "sending done messages" << endl;
+        cout << "sending terminate messages" << endl;
         // send done message to nodes to tell them to terminate
         for (auto addr : other_addrs)
         {
-            send_status_msg(my_addr, addr, DONE);
+            send_status_msg(my_addr, addr, TERMINATE, "");
         }
 
         return 0;
@@ -305,13 +329,13 @@ int main(int argc, char *argv[])
     sleep(2);
 
     cout << "starting main loop" << endl;
-    main_loop(my_addr, other_addrs, num_msgs, msg_len);
+    int64_t avg_latency = main_loop(my_addr, other_addrs, num_msgs, msg_len);
 
     cout << "sending done msg" << endl;
-    send_status_msg(my_addr, controller_addr, DONE);
+    send_status_msg(my_addr, controller_addr, DONE, to_string(avg_latency));
 
     cout << "starting done loop" << endl;
-    done_loop();
+    terminate_loop();
 
     cout << "terminating" << endl;
     sleep(2);
