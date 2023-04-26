@@ -179,58 +179,87 @@ void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, i
 
 unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
 {
-    unsigned char buffer[MAX_MSG_SIZE];
+    unsigned char send_buffer[MAX_MSG_SIZE];
     int64_t total_latency = 0;
-    msg_info info;
-
-    thread sender(send_thread, my_addr, other_addrs, num_msgs, msg_len, mean);
+    default_random_engine generator(0);
+    exponential_distribution<float>distribution(mean);
+    auto next_send_time = chrono::high_resolution_clock::now();
+    int received = 0;
 
     for (int i = 0; i < num_msgs; i++)
     {
-        while (true)
-        {
-            while (recv_dpdk(buffer, &info, NULL) == 0)
+        chrono::nanoseconds delay((long long int) round(distribution(generator)));
+        next_send_time += delay;
+        auto next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch());
+
+        NodeAddr dst_addr = other_addrs[i % other_addrs.size()];
+
+        msg_info send_info;
+        send_info.length = msg_len;
+        send_info.src_ip = my_addr.ip;
+        send_info.src_mac = my_addr.mac;
+        send_info.portid = 0;
+        send_info.dst_ip = dst_addr.ip;
+        send_info.dst_mac = dst_addr.mac;
+
+        send_buffer[0] = REQUEST;
+        sprintf((char*) &send_buffer[1], "%llu", (unsigned long long) next_send_time_ns.count());
+
+        while(chrono::high_resolution_clock::now() < next_send_time){
+            unsigned char recv_buffer[MAX_MSG_SIZE];
+            msg_info recv_info;
+            if (recv_dpdk(recv_buffer, &recv_info, NULL) != 0){
+                if (recv_buffer[0] == RESPONSE)
+                {
+                    // receive echo response
+                    auto recv_time = chrono::high_resolution_clock::now();
+                    auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
+                    total_latency += (recv_time_ns.count()) - stoull((char*) &recv_buffer[1]);
+                    received++;
+                }
+                else if (recv_buffer[0] == REQUEST)
+                {
+                    // send a echo response to a request
+                    swap(recv_info.dst_ip, recv_info.src_ip);
+                    swap(recv_info.dst_mac, recv_info.src_mac);
+                    recv_buffer[0] = RESPONSE;
+
+                    while (send_dpdk(recv_buffer, &recv_info) < 0)
+                        continue;
+                }
+            }
+        }
+
+        while (send_dpdk(send_buffer, &send_info) < 0)
+            continue;
+    }
+
+    while (received < num_msgs){
+            unsigned char recv_buffer[MAX_MSG_SIZE];
+            msg_info recv_info;
+            while (recv_dpdk(recv_buffer, &recv_info, NULL) == 0)
                 continue;
 
-            if (buffer[0] == RESPONSE)
+            if (recv_buffer[0] == RESPONSE)
             {
                 // receive echo response
                 auto recv_time = chrono::high_resolution_clock::now();
-                //string send_time_str = (char*) &buffer[1];
                 auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
-                total_latency += (recv_time_ns.count()) - stoull((char*) &buffer[1]);
-
-                // // check msg length
-                // if (info.length != ((uint32_t) msg_len))
-                // {
-                //     cerr << "incorrect response msg length: " << info.length << " expected: " << msg_len << endl;
-                //     exit(1);
-                // }
-
-                // // verify each byte is correct
-                // for (int b = 3 + send_time_str.length(); b < msg_len; b++)
-                //     if (buffer[b] != ((buffer[b-1] + 1) % 256))
-                //     {
-                //         cerr << "incorrect response msg content: " << ((unsigned int) buffer[b]) << " expected: " << ((unsigned int) ((buffer[b-1] + 1) % 256)) << " index: " << b << endl;
-                //         exit(1);
-                //     }
-
-                // move on to next request to send
-                break;
+                total_latency += (recv_time_ns.count()) - stoull((char*) &recv_buffer[1]);
+                received++;
             }
-            else if (buffer[0] == REQUEST)
+            else if (recv_buffer[0] == REQUEST)
             {
                 // send a echo response to a request
-                swap(info.dst_ip, info.src_ip);
-                swap(info.dst_mac, info.src_mac);
-                buffer[0] = RESPONSE;
+                swap(recv_info.dst_ip, recv_info.src_ip);
+                swap(recv_info.dst_mac, recv_info.src_mac);
+                recv_buffer[0] = RESPONSE;
 
-                while (send_dpdk(buffer, &info) < 0)
+                while (send_dpdk(recv_buffer, &recv_info) < 0)
                     continue;
             }
-        }
     }
-    sender.join();
+
     return total_latency / num_msgs;
 }
 
