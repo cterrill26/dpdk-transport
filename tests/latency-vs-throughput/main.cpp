@@ -144,11 +144,11 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
 void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean){
     char buffer[MAX_MSG_SIZE];
     default_random_engine generator(0);
-    poisson_distribution<int>distribution(mean);
+    exponential_distribution<float>distribution(mean);
     auto next_send_time = chrono::high_resolution_clock::now();
 
     for (int i = 0; i < num_msgs; i++){
-        chrono::nanoseconds delay(distribution(generator));
+        chrono::nanoseconds delay((long long int) round(distribution(generator)));
         next_send_time += delay;
         auto next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch());
         string next_send_time_str = to_string(next_send_time_ns.count());
