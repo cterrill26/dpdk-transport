@@ -182,7 +182,7 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
     unsigned char send_buffer[MAX_MSG_SIZE];
     int64_t total_latency = 0;
     default_random_engine generator(0);
-    exponential_distribution<float>distribution(mean);
+    exponential_distribution<float>distribution(1/mean);
     auto next_send_time = chrono::high_resolution_clock::now();
     int received = 0;
 
