@@ -32,7 +32,7 @@ void wait_for_msg(NodeAddr &addr, MsgType &type, string &content);
 void send_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type, const string &body, double mean);
 void wait_for_done_msgs(const vector<NodeAddr> &addrs);
 void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean);
-int64_t worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
+unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
 void done_loop();
 void controller_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, double mean_start, double mean_end, double mean_increment);
 
@@ -151,7 +151,7 @@ void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, i
         chrono::nanoseconds delay((long long int) round(distribution(generator)));
         next_send_time += delay;
         auto next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch());
-        string next_send_time_str = to_string(next_send_time_ns.count());
+        //string next_send_time_str = to_string(next_send_time_ns.count());
 
         NodeAddr dst_addr = other_addrs[i % other_addrs.size()];
 
@@ -164,7 +164,8 @@ void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, i
         info.dst_mac = dst_addr.mac;
 
         buffer[0] = REQUEST;
-        strcpy(&buffer[1], next_send_time_str.c_str());
+        sprintf(&buffer[1], "%llu", (unsigned long long) next_send_time_ns.count());
+        //strcpy(&buffer[1], next_send_time_str.c_str());
         // for (int b = 2 + next_send_time_str.size(); b < msg_len; b++)
         //     buffer[b] = (i + b) % 256;
 
@@ -176,7 +177,7 @@ void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, i
     }
 }
 
-int64_t worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
+unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
 {
     unsigned char buffer[MAX_MSG_SIZE];
     int64_t total_latency = 0;
@@ -195,9 +196,9 @@ int64_t worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs
             {
                 // receive echo response
                 auto recv_time = chrono::high_resolution_clock::now();
-                string send_time_str = (char*) &buffer[1];
+                //string send_time_str = (char*) &buffer[1];
                 auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
-                total_latency += (recv_time_ns.count()) - stoll(send_time_str);
+                total_latency += (recv_time_ns.count()) - stoull((char*) &buffer[1]);
 
                 // // check msg length
                 // if (info.length != ((uint32_t) msg_len))
@@ -408,7 +409,7 @@ int main(int argc, char *argv[])
 
         double mean = stod(content);
         cout << "starting main loop with mean: " << mean << endl;
-        int64_t avg_latency = worker_loop(my_addr, other_addrs, num_msgs, msg_len, mean);
+        unsigned long long avg_latency = worker_loop(my_addr, other_addrs, num_msgs, msg_len, mean);
 
         cout << "sending done msg" << endl;
         send_msg(my_addr, controller_addr, DONE, to_string(avg_latency));
