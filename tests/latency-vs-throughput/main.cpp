@@ -234,6 +234,8 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
             continue;
     }
 
+    cout << "worker done sending, waiting for responses" << endl;
+
     while (received < num_msgs){
             unsigned char recv_buffer[MAX_MSG_SIZE];
             msg_info recv_info;
@@ -317,7 +319,7 @@ void controller_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addr
 
 int main(int argc, char *argv[])
 {
-    int ret = init_dpdk(argc, argv, F_SINGLE_RECV);
+    int ret = init_dpdk(argc, argv, F_SINGLE_SEND | F_SINGLE_RECV);
     argc -= ret;
     argv += ret;
 
