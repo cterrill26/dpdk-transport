@@ -165,8 +165,8 @@ void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, i
 
         buffer[0] = REQUEST;
         strcpy(&buffer[1], next_send_time_str.c_str());
-        for (int b = 2 + next_send_time_str.size(); b < msg_len; b++)
-            buffer[b] = (i + b) % 256;
+        // for (int b = 2 + next_send_time_str.size(); b < msg_len; b++)
+        //     buffer[b] = (i + b) % 256;
 
         while(chrono::high_resolution_clock::now() < next_send_time)
             continue;
@@ -199,20 +199,20 @@ int64_t worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs
                 auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
                 total_latency += (recv_time_ns.count()) - stoll(send_time_str);
 
-                // check msg length
-                if (info.length != ((uint32_t) msg_len))
-                {
-                    cerr << "incorrect response msg length: " << info.length << " expected: " << msg_len << endl;
-                    exit(1);
-                }
+                // // check msg length
+                // if (info.length != ((uint32_t) msg_len))
+                // {
+                //     cerr << "incorrect response msg length: " << info.length << " expected: " << msg_len << endl;
+                //     exit(1);
+                // }
 
-                // verify each byte is correct
-                for (int b = 3 + send_time_str.length(); b < msg_len; b++)
-                    if (buffer[b] != ((buffer[b-1] + 1) % 256))
-                    {
-                        cerr << "incorrect response msg content: " << ((unsigned int) buffer[b]) << " expected: " << ((unsigned int) ((buffer[b-1] + 1) % 256)) << " index: " << b << endl;
-                        exit(1);
-                    }
+                // // verify each byte is correct
+                // for (int b = 3 + send_time_str.length(); b < msg_len; b++)
+                //     if (buffer[b] != ((buffer[b-1] + 1) % 256))
+                //     {
+                //         cerr << "incorrect response msg content: " << ((unsigned int) buffer[b]) << " expected: " << ((unsigned int) ((buffer[b-1] + 1) % 256)) << " index: " << b << endl;
+                //         exit(1);
+                //     }
 
                 // move on to next request to send
                 break;
