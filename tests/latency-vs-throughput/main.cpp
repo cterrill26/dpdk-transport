@@ -12,6 +12,8 @@
 
 using namespace std;
 
+#define DISTR_SAMPLE_SIZE 1000
+
 enum MsgType
 {
     START,
@@ -31,7 +33,6 @@ vector<NodeAddr> get_addrs_from_file(const string &filename, NodeAddr &my_addr);
 void wait_for_msg(NodeAddr &addr, MsgType &type, string &content);
 void send_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type, const string &body, double mean);
 void wait_for_done_msgs(const vector<NodeAddr> &addrs);
-void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean);
 unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
 void done_loop();
 void controller_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, double mean_start, double mean_end, double mean_increment);
@@ -141,56 +142,26 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs){
     cout << "Avg node latency: " << total_latency / addrs.size() << endl;
 }
 
-void send_thread(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean){
-    char buffer[MAX_MSG_SIZE];
-    default_random_engine generator(0);
-    exponential_distribution<float>distribution(mean);
-    auto next_send_time = chrono::high_resolution_clock::now();
-
-    for (int i = 0; i < num_msgs; i++){
-        chrono::nanoseconds delay((long long int) round(distribution(generator)));
-        next_send_time += delay;
-        auto next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch());
-        //string next_send_time_str = to_string(next_send_time_ns.count());
-
-        NodeAddr dst_addr = other_addrs[i % other_addrs.size()];
-
-        msg_info info;
-        info.length = msg_len;
-        info.src_ip = my_addr.ip;
-        info.src_mac = my_addr.mac;
-        info.portid = 0;
-        info.dst_ip = dst_addr.ip;
-        info.dst_mac = dst_addr.mac;
-
-        buffer[0] = REQUEST;
-        sprintf(&buffer[1], "%llu", (unsigned long long) next_send_time_ns.count());
-        //strcpy(&buffer[1], next_send_time_str.c_str());
-        // for (int b = 2 + next_send_time_str.size(); b < msg_len; b++)
-        //     buffer[b] = (i + b) % 256;
-
-        while(chrono::high_resolution_clock::now() < next_send_time)
-            continue;
-
-        while (send_dpdk(buffer, &info) < 0)
-            continue;
-    }
-}
 
 unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
 {
-    unsigned char send_buffer[MAX_MSG_SIZE];
-    int64_t total_latency = 0;
+    long long int distr_samples[DISTR_SAMPLE_SIZE];
     default_random_engine generator(0);
     exponential_distribution<float>distribution(1/mean);
+    for(int i = 0; i < DISTR_SAMPLE_SIZE; i++){
+        distr_samples[i] = (long long int) round(distribution(generator));
+    }
+
+    unsigned char send_buffer[MAX_MSG_SIZE];
+    int64_t total_latency = 0;
     auto next_send_time = chrono::high_resolution_clock::now();
     int received = 0;
 
     for (int i = 0; i < num_msgs; i++)
     {
-        chrono::nanoseconds delay((long long int) round(distribution(generator)));
+        chrono::nanoseconds delay(distr_samples[i % DISTR_SAMPLE_SIZE]);
         next_send_time += delay;
-        auto next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch());
+        long long unsigned next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch()).count();
 
         NodeAddr dst_addr = other_addrs[i % other_addrs.size()];
 
@@ -203,7 +174,8 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
         send_info.dst_mac = dst_addr.mac;
 
         send_buffer[0] = REQUEST;
-        sprintf((char*) &send_buffer[1], "%llu", (unsigned long long) next_send_time_ns.count());
+        *((long long unsigned *) &send_buffer[1]) = next_send_time_ns;
+
 
         while(chrono::high_resolution_clock::now() < next_send_time){
             unsigned char recv_buffer[MAX_MSG_SIZE];
@@ -213,8 +185,8 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
                 {
                     // receive echo response
                     auto recv_time = chrono::high_resolution_clock::now();
-                    auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
-                    total_latency += (recv_time_ns.count()) - stoull((char*) &recv_buffer[1]);
+                    long long unsigned recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch()).count();
+                    total_latency += recv_time_ns - *((long long unsigned *) &recv_buffer[1]);
                     received++;
                 }
                 else if (recv_buffer[0] == REQUEST)
@@ -246,8 +218,8 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
             {
                 // receive echo response
                 auto recv_time = chrono::high_resolution_clock::now();
-                auto recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch());
-                total_latency += (recv_time_ns.count()) - stoull((char*) &recv_buffer[1]);
+                long long unsigned recv_time_ns = chrono::duration_cast<chrono::nanoseconds>(recv_time.time_since_epoch()).count();
+                total_latency += recv_time_ns - *((long long unsigned *) &recv_buffer[1]);
                 received++;
             }
             else if (recv_buffer[0] == REQUEST)
