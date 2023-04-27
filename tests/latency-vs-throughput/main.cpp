@@ -211,14 +211,15 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
         .mean = mean};
 
     unsigned int lcore_id;
-    while((lcore_id = rte_get_next_lcore(-1, 1, 0)) != RTE_MAX_LCORE){
+    RTE_LCORE_FOREACH_SLAVE(lcore_id){
         if(rte_eal_get_lcore_state(lcore_id) == WAIT) {
             cout << "sender thread running on lcore: " << lcore_id << endl;
             rte_eal_remote_launch((lcore_function_t *) send_thread, &params, lcore_id);
+            break;
         }
     }
 
-    if (lcore_id == RTE_MAX_LCORE){
+    if (lcore_id >= RTE_MAX_LCORE){
             cerr << "no available lcore for sender thread" << endl;
             exit(1);
     }
