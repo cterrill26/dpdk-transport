@@ -20,6 +20,7 @@ SRCS-y := $(patsubst %.cpp,%.c,$(SRCS-y))
 CPPFLAGS += -O3
 CPPFLAGS += -Wall -Wextra
 CPPFLAGS += -I$(subst tests/$(APP),lib,$(RTE_OUTPUT))/include
+CPPFLAGS += -I$(RTE_SDK)/include/dpdk
 
 LDLIBS += -L$(subst tests/$(APP),lib,$(RTE_OUTPUT))/lib
 LDLIBS += -ldpdk_transport -lstdc++
