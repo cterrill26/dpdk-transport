@@ -17,7 +17,7 @@ SRCS-y := main.cpp
 # if cpp srcs are named *.c instead of *.cpp
 SRCS-y := $(patsubst %.cpp,%.c,$(SRCS-y))
 
-CPPFLAGS += -O3 -pg
+CPPFLAGS += -O3
 CPPFLAGS += -Wall -Wextra
 CPPFLAGS += -I$(subst tests/$(APP),lib,$(RTE_OUTPUT))/include
 
