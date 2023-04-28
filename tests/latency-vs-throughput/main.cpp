@@ -36,6 +36,12 @@ struct SendThreadParams
     const int num_msgs;
     const int msg_len;
     const double mean;
+    volatile unsigned long long duration;
+};
+
+struct WorkerResult{
+    unsigned long long latency;
+    unsigned long long duration;
 };
 
 vector<NodeAddr> get_addrs_from_file(const string &filename, NodeAddr &my_addr);
@@ -43,7 +49,7 @@ void wait_for_msg(NodeAddr &addr, MsgType &type, string &content);
 void send_msg(const NodeAddr &src_addr, const NodeAddr &dst_addr, MsgType type, const string &body, double mean);
 int send_thread(SendThreadParams *params);
 void wait_for_done_msgs(const vector<NodeAddr> &addrs);
-unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
+WorkerResult worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len);
 void done_loop();
 void controller_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, double mean_start, double mean_end, double mean_increment);
 
@@ -129,7 +135,8 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs)
 
     unsigned char buffer[MAX_MSG_SIZE];
     msg_info info;
-    long long int total_latency = 0;
+    unsigned long long total_latency = 0;
+    unsigned long long total_duration = 0;
 
     while (!ips.empty())
     {
@@ -146,14 +153,18 @@ void wait_for_done_msgs(const vector<NodeAddr> &addrs)
             cerr << "Controller node received empty done message body" << endl;
             exit(1);
         }
-
-        string latency = (char *)&buffer[1];
+        unsigned long long latency;
+        unsigned long long duration;
+        sscanf((char *) &buffer[1], "%llu,%llu", &duration, &latency);
         cout << "Single node's latency: " << latency << endl;
-        total_latency += stoll(latency);
+        cout << "Single node's duration: " << duration << endl;
+        total_latency += latency;
+        total_duration += duration;
         ips.erase(info.src_ip);
     }
 
     cout << "Avg node latency: " << total_latency / addrs.size() << endl;
+    cout << "Avg node duration: " << total_duration / addrs.size() << endl;
 }
 
 int send_thread(SendThreadParams *params)
@@ -198,12 +209,12 @@ int send_thread(SendThreadParams *params)
     }
 
     auto send_finish = chrono::high_resolution_clock::now();
-    cout << "send duration: " << chrono::duration_cast<chrono::nanoseconds>(send_finish - send_start).count() << endl;
+    params->duration = chrono::duration_cast<chrono::nanoseconds>(send_finish - send_start).count();
 
     return 0;
 }
 
-unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
+WorkerResult worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addrs, int num_msgs, int msg_len, double mean)
 {
     int64_t total_latency = 0;
     SendThreadParams params = {
@@ -211,7 +222,8 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
         .other_addrs = other_addrs,
         .num_msgs = num_msgs,
         .msg_len = msg_len,
-        .mean = mean};
+        .mean = mean,
+        .duration = 0};
 
     unsigned int lcore_id;
     RTE_LCORE_FOREACH_SLAVE(lcore_id){
@@ -258,7 +270,12 @@ unsigned long long worker_loop(const NodeAddr &my_addr, const vector<NodeAddr> &
     }
 
     rte_eal_wait_lcore(lcore_id);
-    return total_latency / num_msgs;
+
+    WorkerResult result;
+    result.duration = params.duration;
+    result.latency = total_latency / num_msgs;
+
+    return result;
 }
 
 void done_loop()
@@ -306,6 +323,8 @@ void controller_loop(const NodeAddr &my_addr, const vector<NodeAddr> &other_addr
         {
             send_msg(my_addr, addr, DONE, "");
         }
+
+        sleep(2);
     }
 
     cout << "sending terminate messages" << endl;
@@ -443,10 +462,10 @@ int main(int argc, char *argv[])
 
         double mean = stod(content);
         cout << "starting main loop with mean: " << mean << endl;
-        unsigned long long avg_latency = worker_loop(my_addr, other_addrs, num_msgs, msg_len, mean);
+        WorkerResult result = worker_loop(my_addr, other_addrs, num_msgs, msg_len, mean);
 
         cout << "sending done msg" << endl;
-        send_msg(my_addr, controller_addr, DONE, to_string(avg_latency));
+        send_msg(my_addr, controller_addr, DONE, to_string(result.duration) + "," + to_string(result.latency));
 
         cout << "starting done loop" << endl;
         done_loop();
