@@ -442,9 +442,9 @@ int main(int argc, char *argv[])
 
     cout << "starting worker nodes" << endl;
 
+    cout << "waiting for start or terminate msg" << endl;
     while (true)
     {
-        cout << "waiting for start or terminate msg" << endl;
         NodeAddr controller_addr;
         MsgType type;
         string content;
@@ -453,10 +453,7 @@ int main(int argc, char *argv[])
         if (type == TERMINATE)
             break;
         else if (type != START)
-        {
-            cerr << "expecting start or terminate msg, received " << type << endl;
-            exit(1);
-        }
+            continue;
 
         sleep(2);
 
@@ -469,6 +466,8 @@ int main(int argc, char *argv[])
 
         cout << "starting done loop" << endl;
         done_loop();
+
+        cout << "waiting for start or terminate msg" << endl;
     }
 
     cout << "worker terminated" << endl;
