@@ -167,12 +167,12 @@ int send_thread(SendThreadParams *params)
     }
 
     unsigned char send_buffer[MAX_MSG_SIZE];
-    auto next_send_time = chrono::high_resolution_clock::now();
+    auto send_start = chrono::high_resolution_clock::now();
 
     for (int i = 0; i < params->num_msgs; i++)
     {
         chrono::nanoseconds delay(distr_samples[i % DISTR_SAMPLE_SIZE]);
-        next_send_time += delay;
+        auto next_send_time = chrono::high_resolution_clock::now() + delay;
         long long unsigned next_send_time_ns = chrono::duration_cast<chrono::nanoseconds>(next_send_time.time_since_epoch()).count();
 
         NodeAddr dst_addr = params->other_addrs[i % params->other_addrs.size()];
@@ -196,6 +196,9 @@ int send_thread(SendThreadParams *params)
         while (send_dpdk(send_buffer, &send_info) < 0)
             continue;
     }
+
+    auto send_finish = chrono::high_resolution_clock::now();
+    cout << "send duration: " << chrono::duration_cast<chrono::nanoseconds>(send_finish - send_start).count() << endl;
 
     return 0;
 }
