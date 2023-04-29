@@ -18,6 +18,7 @@ using namespace std;
 #define DISTR_SAMPLE_SIZE 1000
 #define MAX_MSG_SIZE 100000
 #define UDP_PORT 8000
+#define MAX_RUNTIME_S 20
 
 enum MsgType
 {
@@ -25,7 +26,8 @@ enum MsgType
     DONE,
     REQUEST,
     RESPONSE,
-    TERMINATE
+    TERMINATE,
+    STOP
 };
 
 struct SendThreadParams
@@ -41,6 +43,7 @@ struct SendThreadParams
 struct WorkerResult{
     unsigned long long latency;
     unsigned long long duration;
+    int received;
 };
 
 vector<in_addr_t> get_addrs_from_file(const string &filename, in_addr_t &my_addr);
@@ -132,9 +135,38 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
     unsigned char buffer[MAX_MSG_SIZE];
     unsigned long long total_latency = 0;
     unsigned long long total_duration = 0;
+    int total_received = 0;
+
+    fd_set readfds;
+    struct timeval timeout;
+    int result;
+
+    FD_ZERO(&readfds);
+    FD_SET(sockfd, &readfds);
+
+    timeout.tv_sec = MAX_RUNTIME_S;
+    timeout.tv_usec = 0;
+
 
     while (!ips.empty())
     {
+        result = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+
+        if (result == 0) {
+            // timeout occurred
+            for (auto addr : ips) 
+                send_msg(sockfd, addr, STOP, "");
+
+            continue;
+        }
+        else if (result < 0){
+            cerr << "socket read error" << endl;
+            exit(1);
+        }
+        else if (!FD_ISSET(sockfd, &readfds)){
+            continue;
+        }
+
         struct sockaddr_in src_addr;
         memset(&src_addr, 0, sizeof(src_addr));
         socklen_t addrlen = sizeof(src_addr);
@@ -148,16 +180,20 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
 
         unsigned long long latency;
         unsigned long long duration;
-        sscanf((char *) &buffer[1], "%llu,%llu", &duration, &latency);
+        int received;
+        sscanf((char *) &buffer[1], "%llu,%llu,%d", &duration, &latency, &received);
         cout << "Single node's latency: " << latency << endl;
         cout << "Single node's duration: " << duration << endl;
+        cout << "Single node's received: " << received << endl;
         total_latency += latency;
         total_duration += duration;
+        total_received += received;
         ips.erase(src_addr.sin_addr.s_addr);
     }
 
-    cout << "Avg node latency: " << total_latency / addrs.size() << endl;
-    cout << "Avg node duration: " << total_duration / addrs.size() << endl;
+    cout << "Total latency: " << total_latency << endl;
+    cout << "Total duration: " << total_duration << endl;
+    cout << "Total received: " << total_received << endl;
 }
 
 int send_thread(SendThreadParams *params)
@@ -247,6 +283,17 @@ WorkerResult worker_loop(const int &sockfd, const vector<in_addr_t> &other_addrs
                         0, (const struct sockaddr *)&src_addr,
                         addrlen);
             }
+            else if (recv_buffer[0] == STOP)
+            {
+                sender.join();
+
+                WorkerResult result;
+                result.duration = params.duration;
+                result.latency = total_latency;
+                result.received = i;
+
+                return result;
+            }
         }
     }
 
@@ -254,7 +301,8 @@ WorkerResult worker_loop(const int &sockfd, const vector<in_addr_t> &other_addrs
 
     WorkerResult result;
     result.duration = params.duration;
-    result.latency = total_latency / num_msgs;
+    result.latency = total_latency;
+    result.received = num_msgs;
 
     return result;
 }
@@ -457,7 +505,7 @@ int main(int argc, char *argv[])
         WorkerResult result = worker_loop(sockfd, other_addrs, num_msgs, msg_len, mean);
 
         cout << "sending done msg" << endl;
-        send_msg(sockfd, controller_addr, DONE, to_string(result.duration) + "," + to_string(result.latency));
+        send_msg(sockfd, controller_addr, DONE, to_string(result.duration) + "," + to_string(result.latency) + "," + to_string(result.received));
 
         cout << "starting done loop" << endl;
         done_loop(sockfd);
