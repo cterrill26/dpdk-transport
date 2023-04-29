@@ -144,18 +144,18 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
     FD_ZERO(&readfds);
     FD_SET(sockfd, &readfds);
 
-    timeout.tv_sec = MAX_RUNTIME_S;
-    timeout.tv_usec = 0;
-
 
     while (!ips.empty())
     {
+        timeout.tv_sec = MAX_RUNTIME_S;
+        timeout.tv_usec = 0;
         result = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 
         if (result == 0) {
             // timeout occurred
-            for (auto addr : ips) 
+            for (auto addr : ips) {
                 send_msg(sockfd, addr, STOP, "");
+            }
 
             continue;
         }
