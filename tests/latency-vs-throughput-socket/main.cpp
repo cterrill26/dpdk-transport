@@ -153,6 +153,7 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
 
         if (result == 0) {
             // timeout occurred
+            cout << "timeout occured, sending stop messages" << endl;
             for (auto addr : ips) {
                 send_msg(sockfd, addr, STOP, "");
             }
