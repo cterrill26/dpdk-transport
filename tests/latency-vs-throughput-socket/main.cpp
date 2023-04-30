@@ -215,8 +215,14 @@ int send_thread(SendThreadParams *params)
 
     int sndbufsize = 10*params->msg_len;
     int rcvbufsize = 10*params->msg_len;
-    setsockopt(send_sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize));
-    setsockopt(send_sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize));
+    if (setsockopt(send_sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize)) < 0){
+        cerr << "socket setopt failed" << endl;
+        exit(1);
+    }
+    if (setsockopt(send_sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize)) < 0){
+        cerr << "socket setopt failed" << endl;
+        exit(1);
+    }
 
     // Filling server information
     memset(&servaddr, 0, sizeof(servaddr));
@@ -460,8 +466,14 @@ int main(int argc, char *argv[])
 
     int sndbufsize = 10*msg_len;
     int rcvbufsize = 10*msg_len;
-    setsockopt(sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize));
-    setsockopt(sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize));
+    if (setsockopt(sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize)) < 0){
+        cerr << "socket setopt failed" << endl;
+        exit(1);
+    }
+    if (setsockopt(sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize)) < 0){
+        cerr << "socket setopt failed" << endl;
+        exit(1);
+    }
 
     // Filling server information
     memset(&servaddr, 0, sizeof(servaddr));
