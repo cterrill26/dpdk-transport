@@ -17,8 +17,10 @@ using namespace std;
 
 #define DISTR_SAMPLE_SIZE 1000
 #define MAX_MSG_SIZE 100000
-#define UDP_PORT 8000
+#define UDP_PORT_DEFAULT 8000
+#define UDP_PORT_SENDER 8001
 #define MAX_RUNTIME_S 20
+
 
 enum MsgType
 {
@@ -32,7 +34,7 @@ enum MsgType
 
 struct SendThreadParams
 {
-    const int sockfd;
+    const in_addr_t &my_addr;
     const vector<in_addr_t> other_addrs;
     const int num_msgs;
     const int msg_len;
@@ -51,7 +53,7 @@ void wait_for_msg(const int &sockfd, in_addr_t &addr, MsgType &type, string &con
 void send_msg(const int &sockfd, const in_addr_t &dst_addr, const MsgType &type, const string &body, const double &mean);
 int send_thread(SendThreadParams *params);
 void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs);
-WorkerResult worker_loop(const int &sockfd, const vector<in_addr_t> &other_addrs, const int &num_msgs, const int &msg_len);
+WorkerResult worker_loop(const int &sockfd, const in_addr_t &my_addr, const vector<in_addr_t> &other_addrs, const int &num_msgs, const int &msg_len);
 void done_loop(const int &sockfd);
 void controller_loop(const int &sockfd, const vector<in_addr_t> &other_addrs, const double &mean_start, const double &mean_end, const double &mean_increment);
 
@@ -116,7 +118,7 @@ void send_msg(const int &sockfd, const in_addr_t &dst_addr, MsgType type, const 
     memset(&addr, 0, sizeof(addr));
     addr.sin_addr.s_addr = dst_addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(UDP_PORT);
+    addr.sin_port = htons(UDP_PORT_DEFAULT);
     socklen_t len = sizeof(addr);
 
     sendto(sockfd, (const char *)buffer, sizeof(buffer),
@@ -207,6 +209,25 @@ int send_thread(SendThreadParams *params)
         distr_samples[i] = (long long int)round(distribution(generator));
     }
 
+    int send_sockfd;
+    struct sockaddr_in servaddr;
+    if ((send_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        cerr << "send socket creation failed" << endl;
+        exit(1);
+    }
+
+    // Filling server information
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = params->my_addr;
+    servaddr.sin_port = htons(UDP_PORT_SENDER);
+
+    // Bind the socket with the server address
+    if (bind(send_sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        cerr << "bind failed" << endl;
+        exit(EXIT_FAILURE);
+    }
+
     unsigned char send_buffer[MAX_MSG_SIZE];
     auto send_start = chrono::high_resolution_clock::now();
 
@@ -225,7 +246,7 @@ int send_thread(SendThreadParams *params)
         memset(&addr, 0, sizeof(addr));
         addr.sin_addr.s_addr = dst_addr;
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(UDP_PORT);
+        addr.sin_port = htons(UDP_PORT_DEFAULT);
         socklen_t len = sizeof(addr);
 
         while (chrono::high_resolution_clock::now() < next_send_time)
@@ -233,22 +254,23 @@ int send_thread(SendThreadParams *params)
             continue;
         }
 
-        sendto(params->sockfd, (const char *)send_buffer, params->msg_len,
+        sendto(send_sockfd, (const char *)send_buffer, params->msg_len,
                 0, (const struct sockaddr *)&addr,
                 len);
     }
 
     auto send_finish = chrono::high_resolution_clock::now();
     params->duration = chrono::duration_cast<chrono::nanoseconds>(send_finish - send_start).count();
+    close(send_sockfd);
 
     return 0;
 }
 
-WorkerResult worker_loop(const int &sockfd, const vector<in_addr_t> &other_addrs, const int &num_msgs, const int &msg_len, const double &mean)
+WorkerResult worker_loop(const int &sockfd, const in_addr_t &my_addr, const vector<in_addr_t> &other_addrs, const int &num_msgs, const int &msg_len, const double &mean)
 {
     int64_t total_latency = 0;
     SendThreadParams params = {
-        .sockfd = sockfd,
+        .my_addr = my_addr,
         .other_addrs = other_addrs,
         .num_msgs = num_msgs,
         .msg_len = msg_len,
@@ -280,6 +302,7 @@ WorkerResult worker_loop(const int &sockfd, const vector<in_addr_t> &other_addrs
             {
                 // send a echo response to a request
                 recv_buffer[0] = RESPONSE;
+                src_addr.sin_port = htons(UDP_PORT_DEFAULT);
                 sendto(sockfd, (const char *)recv_buffer, n,
                         0, (const struct sockaddr *)&src_addr,
                         addrlen);
@@ -323,6 +346,7 @@ void done_loop(const int &sockfd)
         {
             // send a echo response to a request
             buffer[0] = RESPONSE;
+            src_addr.sin_port = htons(UDP_PORT_DEFAULT);
             sendto(sockfd, (const char *)buffer, n,
                     0, (const struct sockaddr *)&src_addr,
                     addrlen);
@@ -436,7 +460,7 @@ int main(int argc, char *argv[])
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = my_addr;
-    servaddr.sin_port = htons(UDP_PORT);
+    servaddr.sin_port = htons(UDP_PORT_DEFAULT);
 
     // Bind the socket with the server address
     if (bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
@@ -503,7 +527,7 @@ int main(int argc, char *argv[])
 
         double mean = stod(content);
         cout << "starting main loop with mean: " << mean << endl;
-        WorkerResult result = worker_loop(sockfd, other_addrs, num_msgs, msg_len, mean);
+        WorkerResult result = worker_loop(sockfd, my_addr, other_addrs, num_msgs, msg_len, mean);
 
         cout << "sending done msg" << endl;
         send_msg(sockfd, controller_addr, DONE, to_string(result.duration) + "," + to_string(result.latency) + "," + to_string(result.received));
