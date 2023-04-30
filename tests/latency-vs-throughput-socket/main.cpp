@@ -213,8 +213,8 @@ int send_thread(SendThreadParams *params)
         exit(1);
     }
 
-    int sndbufsize = 10*params->msg_len;
-    int rcvbufsize = 10*params->msg_len;
+    int sndbufsize = 4 * 1024 * 1024;
+    int rcvbufsize = 4 * 1024 * 1024;
     if (setsockopt(send_sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize)) < 0){
         cerr << "socket setopt failed" << endl;
         exit(1);
@@ -464,8 +464,8 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    int sndbufsize = 10*msg_len;
-    int rcvbufsize = 10*msg_len;
+    int sndbufsize = 4 * 1024 * 1024;
+    int rcvbufsize = 4 * 1024 * 1024;
     if (setsockopt(sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize)) < 0){
         cerr << "socket setopt failed" << endl;
         exit(1);
