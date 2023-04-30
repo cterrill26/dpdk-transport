@@ -143,12 +143,12 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
     struct timeval timeout;
     int result;
 
-    FD_ZERO(&readfds);
-    FD_SET(sockfd, &readfds);
 
 
     while (!ips.empty())
     {
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
         timeout.tv_sec = MAX_RUNTIME_S;
         timeout.tv_usec = 0;
         result = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
@@ -165,9 +165,6 @@ void wait_for_done_msgs(const int &sockfd, const vector<in_addr_t> &addrs)
         else if (result < 0){
             cerr << "socket read error" << endl;
             exit(1);
-        }
-        else if (!FD_ISSET(sockfd, &readfds)){
-            continue;
         }
 
         struct sockaddr_in src_addr;
