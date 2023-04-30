@@ -213,6 +213,11 @@ int send_thread(SendThreadParams *params)
         exit(1);
     }
 
+    int sndbufsize = 10*params->msg_len;
+    int rcvbufsize = 10*params->msg_len;
+    setsockopt(send_sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize));
+    setsockopt(send_sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize));
+
     // Filling server information
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
@@ -452,6 +457,11 @@ int main(int argc, char *argv[])
         cerr << "socket creation failed" << endl;
         exit(1);
     }
+
+    int sndbufsize = 10*msg_len;
+    int rcvbufsize = 10*msg_len;
+    setsockopt(sockfd,SOL_SOCKET,SO_RCVBUF,(char*)&rcvbufsize,sizeof(rcvbufsize));
+    setsockopt(sockfd,SOL_SOCKET,SO_SNDBUF,(char*)&sndbufsize,sizeof(sndbufsize));
 
     // Filling server information
     memset(&servaddr, 0, sizeof(servaddr));
